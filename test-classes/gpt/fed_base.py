@@ -3,7 +3,6 @@
 # =========================
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Tuple
 from abc import ABC, abstractmethod
 from copy import deepcopy
@@ -12,50 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .config import *
 
-# -------------------------
-# Configs / payloads
-# -------------------------
-@dataclass
-class ClientConfig:
-    local_epochs: int = 1
-    lr: float = 1e-3
-    weight_decay: float = 0.0
-    batch_size: int = 64
-    replay_ratio: float = 0.5              # replay samples per real batch (0..1)
-    max_grad_norm: Optional[float] = None
-
-
-@dataclass
-class ServerConfig:
-    num_rounds: int = 10
-    clients_per_round: int = 10
-    server_opt_steps: int = 0              # server-side optimization steps
-    server_opt_lr: float = 1e-4
-    server_replay_batch: int = 128         # synthetic batch size for server steps
-
-
-@dataclass
-class TaskInfo:
-    task_id: int
-    new_classes: List[int]                 # the classes introduced in this task
-
-
-@dataclass
-class ClientUpdate:
-    client_id: int
-    num_samples: int
-    model_state: Dict[str, torch.Tensor]
-    gen_state: Optional[Dict[str, torch.Tensor]] = None
-    metrics: Optional[Dict[str, float]] = None
-
-
-@dataclass
-class ServerPayload:
-    # What the server broadcasts each round
-    global_model_state: Dict[str, torch.Tensor]
-    global_gen_state: Optional[Dict[str, torch.Tensor]]
-    known_classes: List[int]
 
 
 def _to_cpu_state(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
