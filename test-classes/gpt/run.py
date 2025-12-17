@@ -230,6 +230,13 @@ def main() -> None:
 			writer.add_scalar(f"train/{k}", v, step)
 		if acc is not None:
 			writer.add_scalar("eval/accuracy", acc, step)
+			writer.add_scalar(f"task_{task.task_id + 1}/eval_accuracy", acc, step)
+		if "loss_ce" in metrics:
+			writer.add_scalar("train/loss_ce", metrics["loss_ce"], step)
+		if "gan_loss_d" in metrics:
+			writer.add_scalar("train/gan_loss_d", metrics["gan_loss_d"], step)
+		if "gan_loss_g" in metrics:
+			writer.add_scalar("train/gan_loss_g", metrics["gan_loss_g"], step)
 		writer.add_scalar("time/eta_sec", eta, step)
 		writer.add_scalar("time/elapsed_sec", elapsed, step)
 		global_step += 1
