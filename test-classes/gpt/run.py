@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--log-dir", default="~/scratch/logs/", help="TensorBoard log directory")
 	parser.add_argument("--num-clients", type=int, default=5)
 	parser.add_argument("--clients-per-round", type=int, default=3)
-	parser.add_argument("--num-rounds", type=int, default=5)
+	parser.add_argument("--global-rounds", type=int, default=5)
 	parser.add_argument("--local-epochs", type=int, default=1)
 	parser.add_argument("--batch-size", type=int, default=64)
 	parser.add_argument("--eval-batch-size", type=int, default=512)
@@ -286,7 +286,7 @@ def main() -> None:
 		max_grad_norm=args.max_grad_norm,
 	)
 	server_cfg = ServerConfig(
-		num_rounds=args.num_rounds,
+		global_rounds=args.global_rounds,
 		clients_per_round=args.clients_per_round,
 		server_opt_steps=args.server_opt_steps,
 		server_opt_lr=args.server_opt_lr,
@@ -305,7 +305,7 @@ def main() -> None:
 		sample_transform=gan_sample_transform,
 	)
 
-	total_rounds = len(stream) * server_cfg.num_rounds
+	total_rounds = len(stream) * server_cfg.global_rounds
 	log_configuration(
 		args=args,
 		client_cfg=client_cfg,
@@ -331,18 +331,20 @@ def main() -> None:
 					seen_classes.append(c)
 
 		acc = None
-		if (round_idx + 1) % args.eval_every == 0 or (round_idx + 1) == server_cfg.num_rounds:
+		if (round_idx + 1) % args.eval_every == 0 or (round_idx + 1) == server_cfg.global_rounds:
 			acc = evaluate(algo.server.model, stream.eval_loader(task.task_id), device)
 
 		completed = pbar.n + 1
 		elapsed = time.time() - start_time
 		eta = (elapsed / completed) * (total_rounds - completed)
 		pbar.set_description(
-			f"Task {task.task_id + 1}/{len(stream)} | Round {round_idx + 1}/{server_cfg.num_rounds}"
+			f"Task {task.task_id + 1}/{len(stream)} | Global Round {round_idx + 1}/{server_cfg.global_rounds}"
 		)
 		postfix = {
-			"loss": f"{metrics.get('loss_ce', 0.0):.4f}",
-			"acc": f"{acc:.3f}" if acc is not None else "-",
+			"test acc": f"{acc:.3f}" if acc is not None else "-",
+			"CE loss": f"{metrics.get('loss_ce', 0.0):.4f}",
+			"GAN D": f"{metrics.get('gan_loss_d', 0.0):.4f}",
+			"GAN G": f"{metrics.get('gan_loss_g', 0.0):.4f}",
 			"elapsed": format_seconds(elapsed),
 			"eta": format_seconds(eta),
 		}

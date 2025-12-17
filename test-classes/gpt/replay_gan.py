@@ -89,6 +89,10 @@ class CondDiscriminator(nn.Module):
         resnet18 = models.resnet18(pretrained=True)
         # Remove the FC layer and only take features
         self.conv = nn.Sequential(*list(resnet18.children())[:-1])  # Remove FC layer
+
+        # freeze ResNet18 parameters
+        for param in self.conv.parameters():
+            param.requires_grad = False
         
         # ResNet18 outputs 512 features before the FC layer
         feature_size = 512

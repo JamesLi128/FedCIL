@@ -18,7 +18,7 @@ class ClientConfig:
 
 @dataclass
 class ServerConfig:
-    num_rounds: int = 10
+    global_rounds: int = 10
     clients_per_round: int = 10
     server_opt_steps: int = 0              # server-side optimization steps
     server_opt_lr: float = 1e-4

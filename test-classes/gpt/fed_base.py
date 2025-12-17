@@ -277,7 +277,7 @@ class BaseFCILAlgorithm(ABC):
             # Update known classes, and expand heads if needed.
             self._on_new_task(task)
 
-            for r in range(self.server.cfg.num_rounds):
+            for r in range(self.server.cfg.global_rounds):
                 payload = self.server.broadcast()
 
                 # sample clients (simple: intersect with available loaders)
