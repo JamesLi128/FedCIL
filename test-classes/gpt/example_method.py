@@ -145,7 +145,7 @@ class ExampleFedAvgWithGANReplay(BaseFCILAlgorithm):
         device: torch.device,
         sample_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ) -> None:
-        backbone, feat_dim = build_pretrained_resnet18_backbone()
+        backbone, feat_dim = build_frozen_pretrained_resnet18_backbone()
         model = IncrementalNet(backbone, feat_dim, num_init_classes)
 
         # Global generator on server

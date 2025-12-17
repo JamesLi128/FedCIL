@@ -3,6 +3,7 @@
 # =========================
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
@@ -11,6 +12,12 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
+
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.multiprocessing import spawn
 
 from config import *
 
@@ -364,6 +371,136 @@ class BaseFCILAlgorithm(ABC):
                 if round_hook is not None:
                     metrics = aggregate_client_metrics(updates)
                     round_hook(task, r, updates, metrics)
+
+    def run_multi_gpu(
+        self,
+        stream: TaskStream,
+        round_hook: Optional[
+            Callable[[TaskInfo, int, List[ClientUpdate], Dict[str, float]], None]
+        ] = None,
+        num_gpus: Optional[int] = None,
+        backend: str = "nccl",
+    ) -> None:
+        """
+        Multi-GPU federated training using DistributedDataParallel.
+        
+        Args:
+            stream: TaskStream containing tasks and per-client loaders
+            round_hook: Optional callback for each round
+            num_gpus: Number of GPUs to use. If None, uses all available GPUs
+            backend: Distributed backend ("nccl" for GPU, "gloo" for CPU/GPU)
+        """
+        
+        if num_gpus is None:
+            num_gpus = torch.cuda.device_count()
+        
+        if num_gpus <= 1:
+            # Fallback to single-GPU training
+            return self.run(stream, round_hook)
+        
+        # Spawn processes for each GPU
+        spawn(self._run_multi_gpu_worker, args=(stream, round_hook, num_gpus, backend), nprocs=num_gpus)
+
+
+    def _run_multi_gpu_worker(
+        self,
+        rank: int,
+        stream: TaskStream,
+        round_hook: Optional[
+            Callable[[TaskInfo, int, List[ClientUpdate], Dict[str, float]], None]
+        ],
+        num_gpus: int,
+        backend: str,
+    ) -> None:
+        """
+        Worker function for each GPU process in DistributedDataParallel.
+        
+        Args:
+            rank: Process rank (GPU ID)
+            stream: TaskStream
+            round_hook: Optional round callback
+            num_gpus: Total number of GPUs
+            backend: Distributed backend
+        """
+        import os
+        import torch
+        import torch.distributed as dist
+        from torch.nn.parallel import DistributedDataParallel as DDP
+        
+        # Set environment variables for distributed training
+        os.environ["MASTER_ADDR"] = os.environ.get("MASTER_ADDR", "localhost")
+        os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
+        
+        # Initialize distributed process group
+        dist.init_process_group(
+            backend=backend,
+            rank=rank,
+            world_size=num_gpus,
+            init_method="env://",
+        )
+        
+        # Set device for this process
+        torch.cuda.set_device(rank)
+        device = torch.device(f"cuda:{rank}")
+        
+        # Wrap server model with DDP
+        self.server.model = DDP(
+            self.server.model.to(device),
+            device_ids=[rank],
+            output_device=rank,
+            find_unused_parameters=True,  # Set to False if all params are used
+        )
+        
+        # Wrap each client model with DDP
+        for cid, client in self.clients.items():
+            if hasattr(client, "model"):
+                client.model = DDP(
+                    client.model.to(device),
+                    device_ids=[rank],
+                    output_device=rank,
+                    find_unused_parameters=True,
+                )
+        
+        try:
+            # Run the standard training loop
+            for task, per_client_loaders in stream:
+                # Update known classes, and expand heads if needed.
+                self._on_new_task(task)
+                
+                for r in range(self.server.cfg.global_rounds):
+                    payload = self.server.broadcast()
+                    
+                    # Sample clients (simple: intersect with available loaders)
+                    available = sorted(per_client_loaders.keys())
+                    chosen = available[: min(self.server.cfg.clients_per_round, len(available))]
+                    
+                    updates: List[ClientUpdate] = []
+                    for cid in chosen:
+                        c = self.clients[cid]
+                        c.load_server_payload(payload)
+                        upd = c.fit_one_task(task, per_client_loaders[cid])
+                        updates.append(upd)
+                    
+                    # Synchronize gradients across processes
+                    self.server.aggregate(updates)
+                    
+                    # Synchronize server state across all GPUs
+                    if dist.is_available() and dist.is_initialized():
+                        dist.barrier()
+                    
+                    self.server.server_optimize_step()
+                    
+                    # Only rank 0 process logs and calls round_hook to avoid duplicates
+                    if rank == 0:
+                        if round_hook is not None:
+                            metrics = aggregate_client_metrics(updates)
+                            round_hook(task, r, updates, metrics)
+        
+        finally:
+            # Cleanup: Destroy process group
+            if dist.is_available() and dist.is_initialized():
+                dist.destroy_process_group()
+
 
     @abstractmethod
     def _on_new_task(self, task: TaskInfo) -> None:
