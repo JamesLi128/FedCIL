@@ -19,7 +19,7 @@ from config import GANReplayConfig
 from copy import deepcopy
 
 
-def build_pretrained_resnet18_backbone() -> tuple[nn.Module, int]:
+def build_frozen_pretrained_resnet18_backbone() -> tuple[nn.Module, int]:
     """
     Returns (backbone, feat_dim). The backbone outputs a feature vector.
     """
@@ -32,6 +32,13 @@ def build_pretrained_resnet18_backbone() -> tuple[nn.Module, int]:
 
     feat_dim = m.fc.in_features
     m.fc = nn.Identity()
+
+    # freeze all parameters except fc
+    for p in m.parameters():
+        p.requires_grad = False
+    for p in m.fc.parameters():
+        p.requires_grad = True
+
     return m, feat_dim
 
 

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
 from copy import deepcopy
 
@@ -302,16 +302,13 @@ class BaseFCILAlgorithm(ABC):
     def run_concurrent(
         self,
         stream: TaskStream,
-        round_hook: Optional[
-            Callable[[TaskInfo, int, List[ClientUpdate], Dict[str, float]], None]
-        ] = None,
+        round_hook: Optional[Callable] = None,
         max_concurrent_clients: Optional[int] = None,
     ) -> None:
-        """
-        Parallelize client training within a round while bounding concurrency.
-        Set `max_concurrent_clients` to limit simultaneous client fits; None uses
-        all chosen clients for the round.
-        """
+        # Pre-allocate distinct CUDA streams if on GPU
+        # Note: Use a pool of streams roughly equal to max_workers
+        self.streams = [torch.cuda.Stream() for _ in range(max_concurrent_clients or 4)]
+
         for task, per_client_loaders in stream:
             self._on_new_task(task)
 
@@ -323,25 +320,43 @@ class BaseFCILAlgorithm(ABC):
                 if not chosen:
                     continue
 
-                def _train_client(cid: int) -> ClientUpdate:
+                # Define the worker function with Stream handling
+                def _train_client(cid_idx_tuple):
+                    idx, cid = cid_idx_tuple
                     c = self.clients[cid]
-                    c.load_server_payload(payload)
-                    return c.fit_one_task(task, per_client_loaders[cid])
+                    
+                    # Assign a stream based on thread index to avoid creating new streams constantly
+                    # or just create a new one: s = torch.cuda.Stream()
+                    s = self.streams[idx % len(self.streams)]
+                    
+                    with torch.cuda.stream(s):
+                        c.load_server_payload(payload)
+                        update = c.fit_one_task(task, per_client_loaders[cid])
+                    
+                    # Synchronization is crucial before returning results to main thread
+                    s.synchronize() 
+                    return idx, update
 
                 max_workers = len(chosen) if max_concurrent_clients is None else max(
                     1, min(max_concurrent_clients, len(chosen))
                 )
 
-                updates: List[ClientUpdate] = []
+                updates: List[ClientUpdate] = [None] * len(chosen) # Pre-allocate to preserve order
+                
                 if max_workers == 1:
-                    # Avoid thread overhead when running sequentially
-                    for cid in chosen:
-                        updates.append(_train_client(cid))
+                    # Sequential path (no stream overhead needed usually, but safe to keep)
+                    for i, cid in enumerate(chosen):
+                        _, upd = _train_client((i, cid))
+                        updates[i] = upd
                 else:
                     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                        futures = {pool.submit(_train_client, cid): cid for cid in chosen}
-                        for fut in as_completed(futures):
-                            updates.append(fut.result())
+                        # Pass index to help manage streams and sort results
+                        args = [(i, cid) for i, cid in enumerate(chosen)]
+                        results = pool.map(_train_client, args)
+                        
+                        # pool.map preserves order, so we can just listify
+                        for idx, upd in results:
+                            updates[idx] = upd
 
                 self.server.aggregate(updates)
                 self.server.server_optimize_step()

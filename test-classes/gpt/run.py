@@ -243,7 +243,7 @@ def main() -> None:
 		global_step += 1
 
 	# algo.run(stream, round_hook=round_logger)
-	algo.run_concurrent_clients(
+	algo.run_concurrent(
 		stream,
 		round_hook=round_logger,
 		max_concurrent_clients=args.max_concurrent_clients,
