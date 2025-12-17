@@ -90,6 +90,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--img-size", type=int, default=224, help="Resize input for ResNet18")
 	parser.add_argument("--seed", type=int, default=42)
 	parser.add_argument("--cpu", action="store_true", help="Force CPU execution")
+	parser.add_argument("--max-concurrent-clients", type=int, default=2, help="Limit number of concurrent clients (for debugging)")
 	return parser.parse_args()
 
 
@@ -241,7 +242,12 @@ def main() -> None:
 		writer.add_scalar("time/elapsed_sec", elapsed, step)
 		global_step += 1
 
-	algo.run(stream, round_hook=round_logger)
+	# algo.run(stream, round_hook=round_logger)
+	algo.run_concurrent_clients(
+		stream,
+		round_hook=round_logger,
+		max_concurrent_clients=args.max_concurrent_clients,
+	)
 
 	pbar.close()
 	writer.close()

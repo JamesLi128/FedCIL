@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from abc import ABC, abstractmethod
 from copy import deepcopy
 
@@ -290,6 +291,57 @@ class BaseFCILAlgorithm(ABC):
                     c.load_server_payload(payload)
                     upd = c.fit_one_task(task, per_client_loaders[cid])
                     updates.append(upd)
+
+                self.server.aggregate(updates)
+                self.server.server_optimize_step()
+
+                if round_hook is not None:
+                    metrics = aggregate_client_metrics(updates)
+                    round_hook(task, r, updates, metrics)
+
+    def run_concurrent(
+        self,
+        stream: TaskStream,
+        round_hook: Optional[
+            Callable[[TaskInfo, int, List[ClientUpdate], Dict[str, float]], None]
+        ] = None,
+        max_concurrent_clients: Optional[int] = None,
+    ) -> None:
+        """
+        Parallelize client training within a round while bounding concurrency.
+        Set `max_concurrent_clients` to limit simultaneous client fits; None uses
+        all chosen clients for the round.
+        """
+        for task, per_client_loaders in stream:
+            self._on_new_task(task)
+
+            for r in range(self.server.cfg.global_rounds):
+                payload = self.server.broadcast()
+
+                available = sorted(per_client_loaders.keys())
+                chosen = available[: min(self.server.cfg.clients_per_round, len(available))]
+                if not chosen:
+                    continue
+
+                def _train_client(cid: int) -> ClientUpdate:
+                    c = self.clients[cid]
+                    c.load_server_payload(payload)
+                    return c.fit_one_task(task, per_client_loaders[cid])
+
+                max_workers = len(chosen) if max_concurrent_clients is None else max(
+                    1, min(max_concurrent_clients, len(chosen))
+                )
+
+                updates: List[ClientUpdate] = []
+                if max_workers == 1:
+                    # Avoid thread overhead when running sequentially
+                    for cid in chosen:
+                        updates.append(_train_client(cid))
+                else:
+                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                        futures = {pool.submit(_train_client, cid): cid for cid in chosen}
+                        for fut in as_completed(futures):
+                            updates.append(fut.result())
 
                 self.server.aggregate(updates)
                 self.server.server_optimize_step()
