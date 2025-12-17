@@ -15,24 +15,16 @@ import os
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List
 
 import torch
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torchvision import datasets, transforms
 from tqdm import tqdm
 
+from data_utils import CIFARTaskStream
 from config import ClientConfig, ServerConfig, TaskInfo
 from example_method import ExampleFedAvgWithGANReplay
-
-
-# -------------------------
-# Constants
-# -------------------------
-CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
-CIFAR_STD = (0.2470, 0.2435, 0.2616)
 
 
 # -------------------------
@@ -79,6 +71,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--cache-dir", default=str(Path.home() / ".cache"), help="Where torchvision caches models")
 	parser.add_argument("--log-dir", default="~/scratch/logs/", help="TensorBoard log directory")
 	parser.add_argument("--num-clients", type=int, default=5)
+	parser.add_argument("--alpha", type=float, default=1.0, help="Dirichlet concentration for client splits")
 	parser.add_argument("--clients-per-round", type=int, default=3)
 	parser.add_argument("--global-rounds", type=int, default=5)
 	parser.add_argument("--local-epochs", type=int, default=1)
@@ -105,38 +98,11 @@ def set_seed(seed: int) -> None:
 	torch.cuda.manual_seed_all(seed)
 
 
-def chunks(seq: Sequence[int], n: int) -> Iterable[List[int]]:
-	for i in range(0, len(seq), n):
-		yield list(seq[i : i + n])
-
-
-def filter_by_class(ds, class_ids: List[int]) -> Subset:
-	mask = [i for i, y in enumerate(ds.targets) if int(y) in class_ids]
-	return Subset(ds, mask)
-
-
-def split_evenly(ds: Subset, num_parts: int, g: torch.Generator) -> List[Subset]:
-	idx = torch.randperm(len(ds), generator=g)
-	splits = torch.tensor_split(idx, num_parts)
-	return [Subset(ds, split.tolist()) for split in splits if len(split) > 0]
-
-
 def format_seconds(sec: float) -> str:
 	sec = max(sec, 0.0)
 	m, s = divmod(int(sec), 60)
 	h, m = divmod(m, 60)
 	return f"{h:02d}:{m:02d}:{s:02d}"
-
-
-def make_gan_sample_transform(img_size: int):
-	mean = torch.tensor(CIFAR_MEAN).view(1, 3, 1, 1)
-	std = torch.tensor(CIFAR_STD).view(1, 3, 1, 1)
-
-	def _transform(x: torch.Tensor) -> torch.Tensor:
-		x = F.interpolate(x, size=(img_size, img_size), mode="bilinear", align_corners=False)
-		return (x - mean.to(x)) / std.to(x)
-
-	return _transform
 
 
 @torch.no_grad()
@@ -151,99 +117,6 @@ def evaluate(model: torch.nn.Module, loader: DataLoader, device: torch.device) -
 		correct += (pred == y).sum().item()
 		total += y.numel()
 	return float(correct) / max(total, 1)
-
-
-class CIFARTaskStream:
-	"""Pre-builds task loaders for an incremental class stream."""
-
-	def __init__(
-		self,
-		dataset: str,
-		data_root: str,
-		img_size: int,
-		num_clients: int,
-		batch_size: int,
-		eval_batch_size: int,
-		classes_per_task: int,
-		num_workers: int,
-		seed: int,
-		device: torch.device,
-	) -> None:
-		train_tf, test_tf = build_transforms(img_size)
-		ds_cls = datasets.CIFAR10 if dataset == "cifar10" else datasets.CIFAR100
-		self.train_ds = ds_cls(root=data_root, train=True, download=True, transform=train_tf)
-		self.test_ds = ds_cls(root=data_root, train=False, download=True, transform=test_tf)
-		self.num_classes = 10 if dataset == "cifar10" else 100
-
-		class_order = list(range(self.num_classes))
-		gen = torch.Generator().manual_seed(seed)
-
-		self.tasks: List[Tuple[TaskInfo, Dict[int, DataLoader], DataLoader, List[int]]] = []
-		seen: List[int] = []
-		for tid, cls_chunk in enumerate(chunks(class_order, classes_per_task)):
-			task_classes = cls_chunk
-			new_info = TaskInfo(task_id=tid, new_classes=task_classes)
-
-			train_subset = filter_by_class(self.train_ds, task_classes)
-			per_client = split_evenly(train_subset, num_clients, gen)
-			loaders: Dict[int, DataLoader] = {}
-			for cid, subset in enumerate(per_client):
-				if len(subset) == 0:
-					continue
-				loaders[cid] = DataLoader(
-					subset,
-					batch_size=batch_size,
-					shuffle=True,
-					num_workers=num_workers,
-					pin_memory=(device.type == "cuda"),
-				)
-
-			for c in task_classes:
-				if c not in seen:
-					seen.append(c)
-			eval_subset = filter_by_class(self.test_ds, seen)
-			eval_loader = DataLoader(
-				eval_subset,
-				batch_size=eval_batch_size,
-				shuffle=False,
-				num_workers=num_workers,
-				pin_memory=(device.type == "cuda"),
-			)
-
-			self.tasks.append((new_info, loaders, eval_loader, list(seen)))
-
-	def __iter__(self):
-		for task_info, loaders, _, _ in self.tasks:
-			yield task_info, loaders
-
-	def __len__(self) -> int:
-		return len(self.tasks)
-
-	def eval_loader(self, task_id: int) -> DataLoader:
-		return self.tasks[task_id][2]
-
-	def seen_classes(self, task_id: int) -> List[int]:
-		return self.tasks[task_id][3]
-
-
-def build_transforms(img_size: int) -> Tuple[transforms.Compose, transforms.Compose]:
-	train_tf = transforms.Compose(
-		[
-			transforms.Resize((img_size, img_size)),
-			transforms.RandomHorizontalFlip(),
-			transforms.RandomCrop(img_size, padding=4),
-			transforms.ToTensor(),
-			transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
-		]
-	)
-	test_tf = transforms.Compose(
-		[
-			transforms.Resize((img_size, img_size)),
-			transforms.ToTensor(),
-			transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
-		]
-	)
-	return train_tf, test_tf
 
 
 def main() -> None:
@@ -266,6 +139,7 @@ def main() -> None:
 		data_root=data_root,
 		img_size=args.img_size,
 		num_clients=args.num_clients,
+		alpha=args.alpha,
 		batch_size=args.batch_size,
 		eval_batch_size=args.eval_batch_size,
 		classes_per_task=args.classes_per_task,
@@ -293,7 +167,7 @@ def main() -> None:
 		server_replay_batch=args.server_replay_batch,
 	)
 
-	gan_sample_transform = make_gan_sample_transform(args.img_size)
+	gan_sample_transform = stream.gan_sample_transform()
 
 	algo = ExampleFedAvgWithGANReplay(
 		num_clients=args.num_clients,
