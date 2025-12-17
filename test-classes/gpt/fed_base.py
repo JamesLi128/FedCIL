@@ -3,7 +3,7 @@
 # =========================
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 from abc import ABC, abstractmethod
 from copy import deepcopy
 
@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import *
+from config import *
 
 
 
@@ -43,6 +43,25 @@ def fedavg(states: List[Tuple[Dict[str, torch.Tensor], int]]) -> Dict[str, torch
     return avg
 
 
+def aggregate_client_metrics(updates: List[ClientUpdate]) -> Dict[str, float]:
+    """
+    Weighted average of metrics using client sample counts. Skips missing metrics.
+    """
+    agg: Dict[str, float] = {}
+    weight: Dict[str, float] = {}
+
+    for upd in updates:
+        if upd.metrics is None:
+            continue
+        for k, v in upd.metrics.items():
+            agg[k] = agg.get(k, 0.0) + v * upd.num_samples
+            weight[k] = weight.get(k, 0.0) + upd.num_samples
+
+    for k, w in weight.items():
+        agg[k] /= max(w, 1e-9)
+    return agg
+
+
 # -------------------------
 # Incremental model base
 # -------------------------
@@ -62,6 +81,9 @@ class IncrementalClassifier(nn.Module):
         old_fc: nn.Linear = self.fc
         new_num = self.num_classes + num_new_classes
         new_fc = nn.Linear(self.in_features, new_num)
+        
+        # Move new layer to same device as old layer
+        new_fc = new_fc.to(old_fc.weight.device)
 
         # copy old weights/bias
         with torch.no_grad():
@@ -153,9 +175,12 @@ class BaseClient(ABC):
 
     def load_server_payload(self, payload: ServerPayload) -> None:
         self.set_known_classes(payload.known_classes)
-        self.model.load_state_dict(payload.global_model_state, strict=True)
+        # Move payload state to device before loading
+        model_state = {k: v.to(self.device) for k, v in payload.global_model_state.items()}
+        self.model.load_state_dict(model_state, strict=True)
         if self.replay is not None and payload.global_gen_state is not None:
-            self.replay.load_state_dict(payload.global_gen_state)
+            gen_state = {k: v.to(self.device) for k, v in payload.global_gen_state.items()}
+            self.replay.load_state_dict(gen_state)
 
     @abstractmethod
     def fit_one_task(
@@ -199,6 +224,8 @@ class BaseServer(ABC):
         # FedAvg model
         model_states = [(_to_cpu_state(u.model_state), u.num_samples) for u in updates]
         new_model = fedavg(model_states)
+        # Move aggregated state to device before loading
+        new_model = {k: v.to(self.device) for k, v in new_model.items()}
         self.model.load_state_dict(new_model, strict=True)
 
         # FedAvg generator (optional)
@@ -207,6 +234,8 @@ class BaseServer(ABC):
             if gen_updates:
                 gen_states = [(_to_cpu_state(sd), n) for sd, n in gen_updates]  # type: ignore[arg-type]
                 new_gen = fedavg(gen_states)
+                # Move aggregated generator state to device before loading
+                new_gen = {k: v.to(self.device) for k, v in new_gen.items()}
                 self.replay.load_state_dict(new_gen)
 
     def server_optimize_step(self) -> None:
@@ -237,7 +266,13 @@ class BaseFCILAlgorithm(ABC):
         self.server = server
         self.clients = clients
 
-    def run(self, stream: TaskStream) -> None:
+    def run(
+        self,
+        stream: TaskStream,
+        round_hook: Optional[
+            Callable[[TaskInfo, int, List[ClientUpdate], Dict[str, float]], None]
+        ] = None,
+    ) -> None:
         for task, per_client_loaders in stream:
             # Update known classes, and expand heads if needed.
             self._on_new_task(task)
@@ -258,6 +293,10 @@ class BaseFCILAlgorithm(ABC):
 
                 self.server.aggregate(updates)
                 self.server.server_optimize_step()
+
+                if round_hook is not None:
+                    metrics = aggregate_client_metrics(updates)
+                    round_hook(task, r, updates, metrics)
 
     @abstractmethod
     def _on_new_task(self, task: TaskInfo) -> None:

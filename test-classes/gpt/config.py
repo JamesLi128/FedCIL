@@ -46,3 +46,11 @@ class ServerPayload:
     global_model_state: Dict[str, torch.Tensor]
     global_gen_state: Optional[Dict[str, torch.Tensor]]
     known_classes: List[int]
+
+@dataclass
+class GANReplayConfig:
+    z_dim: int = 128
+    gan_lr: float = 2e-4
+    gan_steps_per_batch: int = 1
+    img_channels: int = 3
+    num_total_classes: int = 100  # global label space size (e.g., CIFAR-100)

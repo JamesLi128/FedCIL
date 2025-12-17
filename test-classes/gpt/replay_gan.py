@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.models as models
 
-from .fed_base import ReplayStrategy
+from fed_base import ReplayStrategy
+from config import GANReplayConfig
 
 
 class CondGenerator(nn.Module):
@@ -42,45 +44,69 @@ class CondGenerator(nn.Module):
         zy = z + self.embed(y)
         h = self.net(zy)
         h = h.view(h.size(0), -1, 4, 4)
-        return self.deconv(h)
+        # entries in [-1, 1], map to [0, 1] 
+        x_rep = (self.deconv(h) + 1.0) / 2.0
+        return x_rep
 
 
 class CondDiscriminator(nn.Module):
     """
-    Tiny conditional discriminator using label embedding concatenated as a bias.
+    Conditional discriminator for 224x224 images with concatenated label embedding.
+    Designed to handle images transformed for ResNet18 input size.
     """
-    def __init__(self, num_classes: int, img_channels: int = 3, base: int = 64):
+    def __init__(self, num_classes: int, img_channels: int = 3, base: int = 64, embed_dim: int = 128):
         super().__init__()
         self.num_classes = num_classes
-        self.embed = nn.Embedding(num_classes, base)
+        self.embed_dim = embed_dim
+        self.embed = nn.Embedding(num_classes, embed_dim)
 
-        self.conv = nn.Sequential(
-            nn.Conv2d(img_channels, base, 4, 2, 1),      # 16x16
-            nn.LeakyReLU(0.2, True),
-            nn.Conv2d(base, base * 2, 4, 2, 1),          # 8x8
-            nn.BatchNorm2d(base * 2),
-            nn.LeakyReLU(0.2, True),
-            nn.Conv2d(base * 2, base * 4, 4, 2, 1),      # 4x4
-            nn.BatchNorm2d(base * 4),
-            nn.LeakyReLU(0.2, True),
-        )
-        self.head = nn.Linear(base * 4 * 4 * 4, 1)
+        # Feature extraction for 224x224 images
+        # 224 -> 112 -> 56 -> 28 -> 14 -> 7
+        # self.conv = nn.Sequential(
+        #     nn.Conv2d(img_channels, base, 4, 2, 1),        # 224 -> 112
+        #     nn.LeakyReLU(0.2, True),
+        #     nn.Conv2d(base, base * 2, 4, 2, 1),            # 112 -> 56
+        #     nn.BatchNorm2d(base * 2),
+        #     nn.LeakyReLU(0.2, True),
+        #     nn.Conv2d(base * 2, base * 4, 4, 2, 1),        # 56 -> 28
+        #     nn.BatchNorm2d(base * 4),
+        #     nn.LeakyReLU(0.2, True),
+        #     nn.Conv2d(base * 4, base * 8, 4, 2, 1),        # 28 -> 14
+        #     nn.BatchNorm2d(base * 8),
+        #     nn.LeakyReLU(0.2, True),
+        #     nn.Conv2d(base * 8, base * 8, 4, 2, 1),        # 14 -> 7
+        #     nn.BatchNorm2d(base * 8),
+        #     nn.LeakyReLU(0.2, True),
+        # )
+        
+        # # Adaptive pooling to ensure consistent spatial size
+        # self.pool = nn.AdaptiveAvgPool2d((4, 4))
+        
+        # # Feature size after pooling: base * 8 * 4 * 4 = 512 * 16 = 8192
+        # feature_size = base * 8 * 4 * 4
+
+        # Use pretrained ResNet18 backbone for better feature extraction
+        resnet18 = models.resnet18(pretrained=True)
+        # Remove the FC layer and only take features
+        self.conv = nn.Sequential(*list(resnet18.children())[:-1])  # Remove FC layer
+        
+        # ResNet18 outputs 512 features before the FC layer
+        feature_size = 512
+        
+        # Concatenate features with label embedding
+        self.head = nn.Linear(feature_size + embed_dim, 1)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         h = self.conv(x)
+        # h = self.pool(h)
         h = h.flatten(1)
-        # simple conditioning: add embedded label bias
-        h = h + self.embed(y).repeat_interleave(h.size(1) // self.embed.embedding_dim, dim=1)
+        
+        # Concatenate label embedding to extracted features
+        y_embed = self.embed(y)
+        h = torch.cat([h, y_embed], dim=1)
+        
         return self.head(h).squeeze(1)
 
-
-@dataclass
-class GANReplayConfig:
-    z_dim: int = 128
-    gan_lr: float = 2e-4
-    gan_steps_per_batch: int = 1
-    img_channels: int = 3
-    num_total_classes: int = 100  # global label space size (e.g., CIFAR-100)
 
 
 class ClientGANReplay(ReplayStrategy):
@@ -90,11 +116,17 @@ class ClientGANReplay(ReplayStrategy):
       - Can sample labeled synthetic data for replay
       - Can be FedAvg-aggregated via state_dict
     """
-    def __init__(self, cfg: GANReplayConfig, device: torch.device):
+    def __init__(
+        self,
+        cfg: GANReplayConfig,
+        device: torch.device,
+        sample_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+    ):
         self.cfg = cfg
         self.device = device
         self.G = CondGenerator(cfg.z_dim, cfg.num_total_classes, cfg.img_channels).to(device)
         self.D = CondDiscriminator(cfg.num_total_classes, cfg.img_channels).to(device)
+        self._sample_transform = sample_transform
 
         self._known_classes: List[int] = []
         self._opt_g = torch.optim.Adam(self.G.parameters(), lr=cfg.gan_lr, betas=(0.5, 0.999))
@@ -120,6 +152,8 @@ class ClientGANReplay(ReplayStrategy):
             ys = torch.tensor(self._known_classes, device=device, dtype=torch.long)[idx]
         z = torch.randn(n, self.cfg.z_dim, device=device)
         x = self.G(z, ys)
+        if self._sample_transform is not None:
+            x = self._sample_transform(x)
         return x, ys
 
     def train_gan_on_batch(self, x_real: torch.Tensor, y_real: torch.Tensor) -> Dict[str, float]:
