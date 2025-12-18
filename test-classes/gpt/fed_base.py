@@ -13,14 +13,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+import torch.multiprocessing as mp
 
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
-from torch.multiprocessing import spawn
 
 from config import *
-
 
 
 def _to_cpu_state(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -312,10 +310,21 @@ class BaseFCILAlgorithm(ABC):
         round_hook: Optional[Callable] = None,
         max_concurrent_clients: Optional[int] = None,
     ) -> None:
-        # Pre-allocate distinct CUDA streams if on GPU
-        # Note: Use a pool of streams roughly equal to max_workers
-        self.streams = [torch.cuda.Stream() for _ in range(max_concurrent_clients or 4)]
-
+        """
+        Client training with batched processing.
+        
+        Note: True multiprocessing parallelism with CUDA on a single GPU has
+        known issues (ConnectionResetError, CUDA tensor sharing problems).
+        This method now uses sequential training which is reliable.
+        
+        For true parallelism, use run_multi_gpu with multiple GPUs instead.
+        
+        Args:
+            stream: Task stream providing per-client data loaders
+            round_hook: Optional callback after each round
+            max_concurrent_clients: (Deprecated) Previously used for parallelism,
+                                   now ignored as we use sequential training.
+        """
         for task, per_client_loaders in stream:
             self._on_new_task(task)
 
@@ -327,43 +336,102 @@ class BaseFCILAlgorithm(ABC):
                 if not chosen:
                     continue
 
-                # Define the worker function with Stream handling
-                def _train_client(cid_idx_tuple):
-                    idx, cid = cid_idx_tuple
-                    c = self.clients[cid]
-                    
-                    # Assign a stream based on thread index to avoid creating new streams constantly
-                    # or just create a new one: s = torch.cuda.Stream()
-                    s = self.streams[idx % len(self.streams)]
-                    
-                    with torch.cuda.stream(s):
-                        c.load_server_payload(payload)
-                        update = c.fit_one_task(task, per_client_loaders[cid])
-                    
-                    # Synchronization is crucial before returning results to main thread
-                    s.synchronize() 
-                    return idx, update
+                # Sequential client training (reliable approach)
+                updates: List[ClientUpdate] = []
+                for cid in chosen:
+                    client = self.clients[cid]
+                    client.load_server_payload(payload)
+                    upd = client.fit_one_task(task, per_client_loaders[cid])
+                    updates.append(upd)
 
-                max_workers = len(chosen) if max_concurrent_clients is None else max(
-                    1, min(max_concurrent_clients, len(chosen))
-                )
+                self.server.aggregate(updates)
+                self.server.server_optimize_step()
 
-                updates: List[ClientUpdate] = [None] * len(chosen) # Pre-allocate to preserve order
+                if round_hook is not None:
+                    metrics = aggregate_client_metrics(updates)
+                    round_hook(task, r, updates, metrics)
+
+    def run_pipelined(
+        self,
+        stream: TaskStream,
+        round_hook: Optional[Callable] = None,
+        prefetch_factor: int = 2,
+    ) -> None:
+        """
+        Pipelined client training that overlaps data transfer with computation.
+        
+        This is a simpler alternative to full multiprocessing that can still
+        provide speedups by overlapping CPU-side data loading/preparation with
+        GPU computation.
+        
+        Key optimization: While one client is training on GPU, the next client's
+        data is being prepared and transferred asynchronously.
+        
+        Args:
+            stream: Task stream
+            round_hook: Optional callback
+            prefetch_factor: How many clients' data to prefetch (default 2)
+        """
+        use_cuda = next(iter(self.clients.values())).device.type == "cuda"
+        device = next(iter(self.clients.values())).device
+        
+        for task, per_client_loaders in stream:
+            self._on_new_task(task)
+
+            for r in range(self.server.cfg.global_rounds):
+                payload = self.server.broadcast()
+
+                available = sorted(per_client_loaders.keys())
+                chosen = available[: min(self.server.cfg.clients_per_round, len(available))]
+                if not chosen:
+                    continue
+
+                updates: List[ClientUpdate] = []
                 
-                if max_workers == 1:
-                    # Sequential path (no stream overhead needed usually, but safe to keep)
+                if use_cuda and len(chosen) > 1:
+                    # Pipelined execution with async data transfer
+                    # Create separate streams for data transfer and computation
+                    compute_stream = torch.cuda.Stream()
+                    transfer_stream = torch.cuda.Stream()
+                    
+                    # Prefetch first client's data
+                    prefetch_events = {}
+                    prefetch_data = {}
+                    
                     for i, cid in enumerate(chosen):
-                        _, upd = _train_client((i, cid))
-                        updates[i] = upd
-                else:
-                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                        # Pass index to help manage streams and sort results
-                        args = [(i, cid) for i, cid in enumerate(chosen)]
-                        results = pool.map(_train_client, args)
+                        client = self.clients[cid]
+                        client.load_server_payload(payload)
                         
-                        # pool.map preserves order, so we can just listify
-                        for idx, upd in results:
-                            updates[idx] = upd
+                        # If we have prefetched data for this client, wait for it
+                        if cid in prefetch_events:
+                            compute_stream.wait_event(prefetch_events[cid])
+                        
+                        # Train this client on compute stream
+                        with torch.cuda.stream(compute_stream):
+                            upd = client.fit_one_task(task, per_client_loaders[cid])
+                            updates.append(upd)
+                        
+                        # Prefetch next client's data while current is training
+                        # (This is limited because DataLoader prefetch is internal,
+                        # but we can at least overlap the payload loading)
+                        if i + 1 < len(chosen):
+                            next_cid = chosen[i + 1]
+                            with torch.cuda.stream(transfer_stream):
+                                # Pre-warm the next client
+                                next_client = self.clients[next_cid]
+                                next_client.load_server_payload(payload)
+                                event = transfer_stream.record_event()
+                                prefetch_events[next_cid] = event
+                    
+                    # Sync at the end
+                    torch.cuda.synchronize()
+                else:
+                    # Sequential fallback
+                    for cid in chosen:
+                        client = self.clients[cid]
+                        client.load_server_payload(payload)
+                        upd = client.fit_one_task(task, per_client_loaders[cid])
+                        updates.append(upd)
 
                 self.server.aggregate(updates)
                 self.server.server_optimize_step()
@@ -378,128 +446,172 @@ class BaseFCILAlgorithm(ABC):
         round_hook: Optional[
             Callable[[TaskInfo, int, List[ClientUpdate], Dict[str, float]], None]
         ] = None,
-        num_gpus: Optional[int] = None,
-        backend: str = "nccl",
     ) -> None:
         """
-        Multi-GPU federated training using DistributedDataParallel.
+        Executes federated training using DistributedDataParallel (DDP).
         
-        Args:
-            stream: TaskStream containing tasks and per-client loaders
-            round_hook: Optional callback for each round
-            num_gpus: Number of GPUs to use. If None, uses all available GPUs
-            backend: Distributed backend ("nccl" for GPU, "gloo" for CPU/GPU)
+        Each GPU processes one or more clients' silo datasets in parallel.
+        No manual data partitioning needed since loaders are already silo-partitioned.
         """
-        
-        if num_gpus is None:
-            num_gpus = torch.cuda.device_count()
-        
-        if num_gpus <= 1:
-            # Fallback to single-GPU training
-            return self.run(stream, round_hook)
-        
-        # Spawn processes for each GPU
-        spawn(self._run_multi_gpu_worker, args=(stream, round_hook, num_gpus, backend), nprocs=num_gpus)
+        # 1. Strict GPU Check
+        num_gpus = torch.cuda.device_count()
+        print(f"[Master] Detected {num_gpus} GPUs.")
+        if num_gpus < 2:
+            raise RuntimeError(
+                f"DDP requires at least 2 GPUs, but only {num_gpus} were detected. "
+                "Check your CUDA_VISIBLE_DEVICES or MIG configuration."
+            )
+
+        # 2. Prepare Stream (Generators cannot be pickled, so we listify)
+        try:
+            stream_data = list(stream)
+            print(f"[Master] Stream captured with {len(stream_data)} tasks.")
+        except Exception as e:
+            raise RuntimeError(f"Could not convert TaskStream to list for spawning: {e}")
+
+        # 3. Spawn Processes
+        mp.spawn(
+            self._ddp_worker,
+            args=(stream_data, round_hook, num_gpus),
+            nprocs=num_gpus,
+            join=True
+        )
 
 
-    def _run_multi_gpu_worker(
+    def _ddp_worker(
         self,
         rank: int,
-        stream: TaskStream,
-        round_hook: Optional[
-            Callable[[TaskInfo, int, List[ClientUpdate], Dict[str, float]], None]
-        ],
-        num_gpus: int,
-        backend: str,
+        stream_data: List,
+        round_hook: Optional[Callable],
+        world_size: int,
     ) -> None:
         """
-        Worker function for each GPU process in DistributedDataParallel.
+        Worker process for DDP.
         
-        Args:
-            rank: Process rank (GPU ID)
-            stream: TaskStream
-            round_hook: Optional round callback
-            num_gpus: Total number of GPUs
-            backend: Distributed backend
+        Each rank (GPU) processes clients in parallel.
+        Only rank 0 performs aggregation and optimization.
         """
-        import os
-        import torch
-        import torch.distributed as dist
-        from torch.nn.parallel import DistributedDataParallel as DDP
+        # 1. Setup Distributed Environment
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "12355"
         
-        # Set environment variables for distributed training
-        os.environ["MASTER_ADDR"] = os.environ.get("MASTER_ADDR", "localhost")
-        os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
-        
-        # Initialize distributed process group
         dist.init_process_group(
-            backend=backend,
+            backend="nccl",
             rank=rank,
-            world_size=num_gpus,
-            init_method="env://",
+            world_size=world_size
         )
         
         # Set device for this process
         torch.cuda.set_device(rank)
         device = torch.device(f"cuda:{rank}")
+
+        # Ensure server and clients know about the local device
+        self.server.device = device
+        self.server.model.to(device)
+        if self.server.replay is not None and hasattr(self.server.replay, "to"):
+            try:
+                self.server.replay.to(device)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        for c in self.clients.values():
+            c.device = device
+            c.model.to(device)
+            if c.replay is not None and hasattr(c.replay, "to"):
+                try:
+                    c.replay.to(device)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
         
-        # Wrap server model with DDP
-        self.server.model = DDP(
-            self.server.model.to(device),
-            device_ids=[rank],
-            output_device=rank,
-            find_unused_parameters=True,  # Set to False if all params are used
-        )
-        
-        # Wrap each client model with DDP
-        for cid, client in self.clients.items():
-            if hasattr(client, "model"):
-                client.model = DDP(
-                    client.model.to(device),
-                    device_ids=[rank],
-                    output_device=rank,
-                    find_unused_parameters=True,
-                )
-        
+        if rank == 0:
+            print(f"[Rank {rank}] Initialized on {device}")
+
         try:
-            # Run the standard training loop
-            for task, per_client_loaders in stream:
-                # Update known classes, and expand heads if needed.
+            for task, per_client_loaders in stream_data:
+                # Update known classes and model structure
                 self._on_new_task(task)
                 
+                # Sync processes to ensure model structure is consistent across all ranks
+                dist.barrier()
+
                 for r in range(self.server.cfg.global_rounds):
                     payload = self.server.broadcast()
-                    
-                    # Sample clients (simple: intersect with available loaders)
+
+                    # Select clients for this round
                     available = sorted(per_client_loaders.keys())
                     chosen = available[: min(self.server.cfg.clients_per_round, len(available))]
-                    
-                    updates: List[ClientUpdate] = []
-                    for cid in chosen:
-                        c = self.clients[cid]
-                        c.load_server_payload(payload)
-                        upd = c.fit_one_task(task, per_client_loaders[cid])
-                        updates.append(upd)
-                    
-                    # Synchronize gradients across processes
-                    self.server.aggregate(updates)
-                    
-                    # Synchronize server state across all GPUs
-                    if dist.is_available() and dist.is_initialized():
-                        dist.barrier()
-                    
-                    self.server.server_optimize_step()
-                    
-                    # Only rank 0 process logs and calls round_hook to avoid duplicates
+
+                    # --- DISTRIBUTE CLIENTS ACROSS GPUs ---
+                    # Each GPU processes a subset of the chosen clients
+                    # This avoids redundant processing and enables true parallelization
+                    clients_per_gpu = (len(chosen) + world_size - 1) // world_size
+                    start_idx = rank * clients_per_gpu
+                    end_idx = min(start_idx + clients_per_gpu, len(chosen))
+                    gpu_chosen = chosen[start_idx:end_idx]
+
                     if rank == 0:
-                        if round_hook is not None:
+                        print(f"[Round {r}] Total clients: {len(chosen)}, GPU distribution: {clients_per_gpu} per GPU")
+                        print(f"[Rank {rank}] Processing clients: {gpu_chosen}")
+
+                    updates: List[ClientUpdate] = []
+
+                    for cid in gpu_chosen:
+                        client = self.clients[cid]
+
+                        # Load payload (weights from server)
+                        client.load_server_payload(payload)
+
+                        # Train client locally on its GPU; no DDP wrapping so gradients stay local
+                        upd = client.fit_one_task(task, per_client_loaders[cid])
+                        updates.append(upd)
+
+                    # --- SYNCHRONIZE BEFORE AGGREGATION ---
+                    # All ranks wait here before rank 0 aggregates
+                    dist.barrier()
+
+                    # --- AGGREGATION AND SERVER OPTIMIZATION (RANK 0 ONLY) ---
+                    # Gather all client updates from all ranks to rank 0
+                    # NOTE: This is a simple gather; in production, you might use 
+                    # torch.distributed.all_gather, but for FL we typically gather to rank 0
+                    if world_size > 1:
+                        all_updates = [None] * world_size
+                        dist.all_gather_object(all_updates, updates)
+                        if rank == 0:
+                            flat_updates = [u for upd_list in all_updates if upd_list for u in upd_list]
+                            self.server.aggregate(flat_updates)
+                    else:
+                        if rank == 0:
+                            self.server.aggregate(updates)
+
+                    if rank == 0:
+                        self.server.server_optimize_step()
+
+                    # --- BROADCAST UPDATED WEIGHTS FROM RANK 0 ---
+                    # Ensure all ranks have the same server weights before next round
+                    dist.barrier()
+                    for param in self.server.model.parameters():
+                        dist.broadcast(param.data, src=0)
+
+                    # --- LOGGING (RANK 0 ONLY) ---
+                    if rank == 0 and round_hook is not None:
+                        if world_size > 1:
+                            all_updates = [None] * world_size
+                            dist.all_gather_object(all_updates, updates)
+                            flat_updates = [u for upd_list in all_updates if upd_list for u in upd_list]
+                            metrics = aggregate_client_metrics(flat_updates)
+                            round_hook(task, r, flat_updates, metrics)
+                        else:
                             metrics = aggregate_client_metrics(updates)
                             round_hook(task, r, updates, metrics)
-        
+
+                    dist.barrier()
+
+        except Exception as e:
+            print(f"[Rank {rank}] Error during training: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
-            # Cleanup: Destroy process group
-            if dist.is_available() and dist.is_initialized():
-                dist.destroy_process_group()
+            dist.destroy_process_group()
+
 
 
     @abstractmethod

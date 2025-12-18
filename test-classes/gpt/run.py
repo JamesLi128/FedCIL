@@ -17,6 +17,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List
 
+# Ensure CUDA device ordering is stable before importing torch
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -83,7 +86,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--max-grad-norm", type=float, default=None)
 	parser.add_argument("--classes-per-task", type=int, default=2, help="How many classes appear in each new task")
 	parser.add_argument("--eval-every", type=int, default=1, help="Rounds between evals (per task)")
-	parser.add_argument("--num-workers", type=int, default=4)
+	parser.add_argument("--num-workers", type=int, default=16)
 	parser.add_argument("--server-opt-steps", type=int, default=0, help="Optional server-side optimization steps")
 	parser.add_argument("--server-opt-lr", type=float, default=1e-4)
 	parser.add_argument("--server-replay-batch", type=int, default=128)
@@ -127,6 +130,7 @@ def main() -> None:
 	cache_dir = Path(args.cache_dir).expanduser()
 	cache_dir.mkdir(parents=True, exist_ok=True)
 	os.environ.setdefault("TORCH_HOME", str(cache_dir / "torch"))
+	os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
 	log_dir = Path(args.log_dir).expanduser()
 	log_dir.mkdir(parents=True, exist_ok=True)
@@ -242,15 +246,10 @@ def main() -> None:
 		writer.add_scalar("time/elapsed_sec", elapsed, step)
 		global_step += 1
 
-	# algo.run(stream, round_hook=round_logger)
-	# algo.run_concurrent(
-	# 	stream,
-	# 	round_hook=round_logger,
-	# 	max_concurrent_clients=args.max_concurrent_clients,
-	# )
-	algo.run_multi_gpu(
-		stream,
-		round_hook=round_logger
+	algo.run_concurrent(
+		stream=stream,
+		max_concurrent_clients=args.max_concurrent_clients,
+		round_hook=round_logger,
 	)
 
 	pbar.close()
