@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hydra-test
+#SBATCH --job-name=nc100cpr10_cifar10
 #SBATCH --partition=gpuq
 #SBATCH --qos=gpu                       # required for gpuq on Hopper
 #SBATCH --output=/home/hli54/scratch/logs/fcil/cifar10/slurm-log/%j-out.log
@@ -74,7 +74,7 @@ export PYTHONUNBUFFERED=1
 #     python run.py --config-path=../config/cifar10 --config-name=$config
 # done
 
-python run.py --config-path=/home/hli54/Projects/FCIL/config/cifar10 --config-name=nc5cpr3 -m
+python run.py --config-path=/home/hli54/Projects/FCIL/config/cifar10 --config-name=nc100cpr10 -m
 
 
 echo "Job completed at $(date)"

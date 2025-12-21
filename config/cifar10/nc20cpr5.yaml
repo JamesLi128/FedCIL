@@ -1,13 +1,21 @@
 # Hyperparameter sweep configuration for CIFAR-10
-# Usage: python run.py --config-name=sweep_cifar10 -m
+# Usage: python run.py --config-name=nc20cpr5 -m
 #
 # This will run all combinations within a single SLURM allocation
 
 defaults:
   - cifar10
+  - _self_
+
+# Override logging directory for this sweep
+logging:
+  log_dir: /home/hli54/scratch/logs/fcil/cifar10/nc20cpr5/gan-lr-and-lr-sweep
 
 hydra:
   mode: MULTIRUN
+  sweep:
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: gan-lr-${training.gan_lr}_lr-${training.lr}
   sweeper:
     params:
       # federated
@@ -15,11 +23,10 @@ hydra:
       federated.clients_per_round: 5
 
       # training
-      training.global_rounds: 30, 50
+      training.global_rounds: 50
       training.local_epochs: 5
+      training.gan_lr: 5e-4, 1e-3
+      training.lr: 1e-3, 5e-4
 
       # replay
-      replay.ratio: 0.5, 0.7, 1.0
-
-      # logging
-      # logging.log_dir: /home/hli54/scratch/logs/fcil/cifar10/nc20cpr5/
+      replay.ratio: 1.0
