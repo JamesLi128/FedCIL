@@ -1,0 +1,26 @@
+# @package _global_
+# CIFAR-100 Federated Class-Incremental Learning Configuration
+
+defaults:
+  - cifar10  # Inherit from cifar10 and override
+
+# -------------------------
+# Dataset & Data Loading
+# -------------------------
+dataset:
+  name: cifar100
+  num_classes: 100
+  classes_per_task: 10
+
+# -------------------------
+# Training Hyperparameters (adjusted for more classes)
+# -------------------------
+training:
+  global_rounds: 10
+  local_epochs: 2
+
+# -------------------------
+# GAN Configuration
+# -------------------------
+gan:
+  z_dim: 128

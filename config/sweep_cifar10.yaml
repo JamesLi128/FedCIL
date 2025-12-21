@@ -1,0 +1,16 @@
+# Hyperparameter sweep configuration for CIFAR-10
+# Usage: python run.py --config-name=sweep_cifar10 -m
+#
+# This will run all combinations within a single SLURM allocation
+
+defaults:
+  - cifar10
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      federated.num_clients: 5, 10, 20
+      
+      federated.alpha: 0.5, 1.0
+      replay.ratio: 0.7, 1.0

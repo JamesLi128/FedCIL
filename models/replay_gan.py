@@ -164,10 +164,16 @@ class ClientGANReplay(ReplayStrategy):
         """
         One GAN update (or a few) for a single real batch.
         """
+        bsz = x_real.size(0)
+        
+        # Skip GAN training if batch size is too small for BatchNorm
+        # BatchNorm requires at least 2 samples to compute statistics
+        if bsz < 2:
+            return {"loss_d": 0.0, "loss_g": 0.0}
+        
         self.G.train()
         self.D.train()
 
-        bsz = x_real.size(0)
         z = torch.randn(bsz, self.cfg.z_dim, device=self.device)
         y = y_real
 
