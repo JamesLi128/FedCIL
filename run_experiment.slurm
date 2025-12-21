@@ -8,8 +8,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:A100.80gb:1
-#SBATCH --time=3-00:00:00
+#SBATCH --gres=gpu:A100.40gb:1
+#SBATCH --time=1-00:00:00
 
 # Load modules (adjust based on your cluster)
 # module load python/3.10
@@ -74,7 +74,7 @@ export PYTHONUNBUFFERED=1
 #     python run.py --config-path=../config/cifar10 --config-name=$config
 # done
 
-python run.py --config-path=/home/hli54/Projects/FCIL/config/cifar10 --config-name=nc100cpr10 -m
+python run.py --config-path=/home/hli54/Projects/FCIL/config/cifar10 --config-name=nc5cpr3 -m
 
 
 echo "Job completed at $(date)"

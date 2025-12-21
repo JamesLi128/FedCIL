@@ -54,7 +54,7 @@ class CondDiscriminator(nn.Module):
     Conditional discriminator for 224x224 images with concatenated label embedding.
     Designed to handle images transformed for ResNet18 input size.
     """
-    def __init__(self, num_classes: int, img_channels: int = 3, base: int = 64, embed_dim: int = 128):
+    def __init__(self, num_classes: int, img_channels: int = 3, base: int = 64, embed_dim: int = 32):
         super().__init__()
         self.num_classes = num_classes
         self.embed_dim = embed_dim
