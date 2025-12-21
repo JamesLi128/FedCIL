@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=hydra-test
-#SBATCH --partition=contrib-gpuq
+#SBATCH --partition=gpuq
 #SBATCH --qos=gpu                       # required for gpuq on Hopper
-#SBATCH --output=/home/hli54/scratch/logs/hydra-test/%j_hydra-test_out.log
-#SBATCH --error=/home/hli54/scratch/logs/hydra-test/%j_hydra-test_err.log
+#SBATCH --output=/home/hli54/scratch/logs/fcil/cifar10/slurm-log/%j-out.log
+#SBATCH --error=/home/hli54/scratch/logs/fcil/cifar10/slurm-log/%j-err.log
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:H100.80gb:1
+#SBATCH --gres=gpu:A100.80gb:1
 #SBATCH --time=3-00:00:00
 
 # Load modules (adjust based on your cluster)

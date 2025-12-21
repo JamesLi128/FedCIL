@@ -149,7 +149,7 @@ class ExampleFedAvgWithGANReplay(BaseFCILAlgorithm):
         model = IncrementalNet(backbone, feat_dim, num_init_classes)
 
         # Global generator on server
-        gan_cfg = GANReplayConfig(num_total_classes=total_num_classes)
+        gan_cfg = GANReplayConfig(num_total_classes=total_num_classes, gan_lr=client_cfg.gan_lr, gan_weight_decay=client_cfg.gan_weight_decay)
         server_replay = ClientGANReplay(gan_cfg, device=device, sample_transform=sample_transform)
 
         server = FedAvgGANServer(model=model, replay=server_replay, cfg=server_cfg, device=device)

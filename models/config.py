@@ -10,7 +10,9 @@ import torch
 class ClientConfig:
     local_epochs: int = 1
     lr: float = 1e-3
+    gan_lr: float = 2e-4
     weight_decay: float = 0.0
+    gan_weight_decay: float = 0.0
     batch_size: int = 64
     replay_ratio: float = 0.5              # replay samples per real batch (0..1)
     max_grad_norm: Optional[float] = None
@@ -51,6 +53,7 @@ class ServerPayload:
 class GANReplayConfig:
     z_dim: int = 128
     gan_lr: float = 2e-4
+    gan_weight_decay: float = 0.0005
     gan_steps_per_batch: int = 1
     img_channels: int = 3
     num_total_classes: int = 100  # global label space size (e.g., CIFAR-100)

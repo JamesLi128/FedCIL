@@ -9,7 +9,7 @@ defaults:
 # -------------------------
 dataset:
   name: cifar10
-  data_root: ${oc.env:HOME}/data
+  data_root: /home/hli54/data
   num_classes: 10
   img_size: 224  # Resize for ResNet18
   classes_per_task: 2
@@ -31,7 +31,9 @@ training:
   batch_size: 64
   eval_batch_size: 512
   lr: 1e-3
-  weight_decay: 0.0
+  gan_lr: 2e-4
+  weight_decay: 0.0001
+  gan_weight_decay: 0.0005
   max_grad_norm: null
 
 # -------------------------
@@ -64,14 +66,14 @@ system:
   seed: 42
   num_workers: 16
   max_concurrent_clients: 2
-  cache_dir: ${oc.env:HOME}/.cache
+  cache_dir: /home/hli54/.cache
   cpu: false  # Force CPU execution
 
 # -------------------------
 # Logging
 # -------------------------
 logging:
-  log_dir: ${oc.env:HOME}/scratch/logs/hydra-test/
+  log_dir: /home/hli54/scratch/logs/hydra-test/
   eval_every: 1  # Rounds between evals (per task)
 
 # -------------------------
@@ -81,7 +83,7 @@ hydra:
   run:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:
-    dir: ${logging.log_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
     subdir: ${hydra.job.num}
   job:
     chdir: false  # Don't change working directory
