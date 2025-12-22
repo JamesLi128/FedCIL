@@ -15,7 +15,7 @@ hydra:
   mode: MULTIRUN
   sweep:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: hidden_dim_${model.hidden_dim}
+    subdir: server-steps-${server.opt_steps}_server-lr-${server.opt_lr}
   sweeper:
     params:
       # federated
