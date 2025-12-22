@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=test-mnist
+#SBATCH --job-name=mnist-more-logs
 #SBATCH --partition=gpuq
 #SBATCH --qos=gpu                       # required for gpuq on Hopper
 #SBATCH --output=/home/hli54/scratch/logs/fcil/slurm-log/%j-out.log

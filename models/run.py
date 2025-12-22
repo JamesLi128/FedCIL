@@ -259,6 +259,7 @@ def main(cfg: DictConfig) -> None:
 	# Store config values needed in closure
 	eval_every = cfg.logging.eval_every
 	max_concurrent_clients = cfg.system.max_concurrent_clients
+	z_dim = cfg.gan.get("z_dim", 128)  # Get GAN's z_dim from config for sample generation
 	
 	# Initialize accuracy matrix for continual learning metrics
 	num_tasks = len(stream)
@@ -266,6 +267,10 @@ def main(cfg: DictConfig) -> None:
 		num_tasks=num_tasks,
 		rounds_per_task=server_cfg.global_rounds,
 	)
+	
+	# Create base directory for generated samples
+	samples_base_dir = log_dir / "generated_samples"
+	samples_base_dir.mkdir(parents=True, exist_ok=True)
 
 	def round_logger(task: TaskInfo, round_idx: int, updates, metrics):
 		nonlocal global_step, seen_classes
@@ -348,6 +353,23 @@ def main(cfg: DictConfig) -> None:
 			f"Elapsed: {format_seconds(elapsed)} | ETA: {format_seconds(eta)}"
 		)
 		global_step += 1
+		
+		# Generate sample images at the end of each task
+		if (round_idx + 1) == server_cfg.global_rounds:
+			log.info(f"Generating sample images for task {task.task_id}...")
+			task_samples_dir = samples_base_dir / f"task_{task.task_id}"
+			task_samples_dir.mkdir(parents=True, exist_ok=True)
+			
+			generate_and_save_samples(
+				generator=algo.server.replay.G,
+				known_classes=list(seen_classes),  # Copy to avoid mutation issues
+				output_dir=task_samples_dir,
+				num_samples_per_class=4,
+				z_dim=z_dim,
+				device=device,
+				filename=f"task_{task.task_id}_samples.png",
+			)
+			log.info(f"Sample images saved to {task_samples_dir}")
 
 	algo.run_concurrent(
 		stream=stream,
@@ -380,27 +402,6 @@ def main(cfg: DictConfig) -> None:
 	# Save metrics to files
 	save_metrics(metrics_summary, log_dir, "metrics.json")
 	save_accuracy_matrix_csv(acc_matrix, log_dir, "accuracy_matrix.csv")
-	
-	# -------------------------
-	# Generate sample images from the GAN
-	# -------------------------
-	log.info("Generating sample images from GAN...")
-	samples_dir = log_dir / "generated_samples"
-	samples_dir.mkdir(parents=True, exist_ok=True)
-	
-	# Get GAN's z_dim from config
-	z_dim = cfg.gan.get("z_dim", 128)
-	
-	# Generate 4 images per class for all known classes
-	generate_and_save_samples(
-		generator=algo.server.replay.G,
-		known_classes=seen_classes,
-		output_dir=samples_dir,
-		num_samples_per_class=4,
-		z_dim=z_dim,
-		device=device,
-		filename="all_classes_samples.png",
-	)
 	
 	writer.close()
 	total_time = time.time() - start_time
