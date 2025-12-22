@@ -101,16 +101,62 @@ class IncrementalClassifier(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc(x)
+    
+class MultilayerIncrementalClassifier(nn.Module):
+    """
+    Expandable multi-layer classifier head for class-incremental learning.
+    """
+    def __init__(self, in_features: int, num_classes: int, hidden_dim: int):
+        super().__init__()
+        self.in_features = in_features
+        self.num_classes = num_classes
+        self.hidden_dim = hidden_dim
+
+        self.fc1 = nn.Linear(in_features, hidden_dim)
+        self.relu = nn.LeakyReLU()
+        self.fc2 = nn.Linear(hidden_dim, num_classes)
+
+    def expand(self, num_new_classes: int) -> None:
+        if num_new_classes <= 0:
+            return
+        old_fc2: nn.Linear = self.fc2
+        new_num = self.num_classes + num_new_classes
+        new_fc2 = nn.Linear(self.hidden_dim, new_num)
+        
+        # Move new layer to same device as old layer
+        new_fc2 = new_fc2.to(old_fc2.weight.device)
+
+        # copy old weights/bias
+        with torch.no_grad():
+            new_fc2.weight[: self.num_classes].copy_(old_fc2.weight)
+            new_fc2.bias[: self.num_classes].copy_(old_fc2.bias)
+
+        self.num_classes = new_num
+        self.fc2 = new_fc2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
 
 
 class IncrementalNet(nn.Module):
     """
     Backbone + (expandable) classifier head.
+    Classifier type can be "singlehead" or "multilayer".
     """
-    def __init__(self, backbone: nn.Module, feat_dim: int, num_classes: int):
+    def __init__(self, backbone: nn.Module, feat_dim: int, num_classes: int, type="singlehead", hidden_dim: Optional[int] = None):
         super().__init__()
         self.backbone = backbone
-        self.classifier = IncrementalClassifier(feat_dim, num_classes)
+        if type == "singlehead":
+            self.classifier = IncrementalClassifier(feat_dim, num_classes)
+        elif type == "multilayer":
+            if hidden_dim is None:
+                raise ValueError("hidden_dim must be specified for multilayer classifier")
+            self.classifier = MultilayerIncrementalClassifier(feat_dim, num_classes, hidden_dim)
+        else:
+            raise ValueError(f"Unknown classifier type in IncrementalNet: {type}")
 
     def expand_classes(self, num_new: int) -> None:
         self.classifier.expand(num_new)

@@ -8,9 +8,9 @@ defaults:
 # Dataset & Data Loading
 # -------------------------
 dataset:
-  name: cifar10
+  name: cifar100
   data_root: /home/hli54/data
-  num_classes: 10
+  num_classes: 100
   img_size: 224  # Resize for ResNet18
   classes_per_task: 2
 
@@ -31,8 +31,6 @@ training:
   batch_size: 64
   eval_batch_size: 512
   lr: 1e-3
-  classification_head_type: singlehead  # singlehead or multilayer
-  hidden_dim: 0  # Hidden dimension for multilayer classifier
   gan_lr: 2e-4
   weight_decay: 0.0001
   gan_weight_decay: 0.0005
