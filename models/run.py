@@ -62,6 +62,13 @@ from omegaconf import DictConfig, OmegaConf
 from data_utils import TaskStream
 from config import ClientConfig, ServerConfig, TaskInfo
 from example_method import ExampleFedAvgWithGANReplay
+from analyze_utils import (
+    AccuracyMatrix,
+    compute_all_metrics,
+    save_metrics,
+    save_accuracy_matrix_csv,
+    generate_and_save_samples,
+)
 
 
 # -------------------------
@@ -252,6 +259,13 @@ def main(cfg: DictConfig) -> None:
 	# Store config values needed in closure
 	eval_every = cfg.logging.eval_every
 	max_concurrent_clients = cfg.system.max_concurrent_clients
+	
+	# Initialize accuracy matrix for continual learning metrics
+	num_tasks = len(stream)
+	acc_matrix = AccuracyMatrix(
+		num_tasks=num_tasks,
+		rounds_per_task=server_cfg.global_rounds,
+	)
 
 	def round_logger(task: TaskInfo, round_idx: int, updates, metrics):
 		nonlocal global_step, seen_classes
@@ -260,9 +274,23 @@ def main(cfg: DictConfig) -> None:
 				if c not in seen_classes:
 					seen_classes.append(c)
 
+		# Evaluate on all seen tasks for comprehensive metrics
+		task_accuracies: Dict[int, float] = {}
 		acc = None
 		if (round_idx + 1) % eval_every == 0 or (round_idx + 1) == server_cfg.global_rounds:
-			acc = evaluate(algo.server.model, stream.eval_loader(task.task_id), device)
+			# Evaluate on all tasks seen so far (0 to current task)
+			for eval_task_id in range(task.task_id + 1):
+				task_acc = evaluate(algo.server.model, stream.eval_loader(eval_task_id), device)
+				task_accuracies[eval_task_id] = task_acc
+				# Record in accuracy matrix
+				acc_matrix.record_accuracy(
+					current_task=task.task_id,
+					current_round=round_idx,
+					eval_task=eval_task_id,
+					accuracy=task_acc,
+				)
+			# Current task accuracy for display
+			acc = task_accuracies.get(task.task_id)
 
 		completed = pbar.n + 1
 		elapsed = time.time() - start_time
@@ -284,9 +312,18 @@ def main(cfg: DictConfig) -> None:
 		step = global_step
 		for k, v in metrics.items():
 			writer.add_scalar(f"train/{k}", v, step)
+		
+		# Log per-task accuracies to TensorBoard
+		for eval_task_id, task_acc in task_accuracies.items():
+			writer.add_scalar(f"eval/task_{eval_task_id}_accuracy", task_acc, step)
+		
 		if acc is not None:
-			writer.add_scalar("eval/accuracy", acc, step)
-			writer.add_scalar(f"task_{task.task_id + 1}/eval_accuracy", acc, step)
+			writer.add_scalar("eval/current_task_accuracy", acc, step)
+			# Also log average accuracy over all seen tasks
+			if task_accuracies:
+				avg_acc = sum(task_accuracies.values()) / len(task_accuracies)
+				writer.add_scalar("eval/average_accuracy", avg_acc, step)
+		
 		if "loss_ce" in metrics:
 			writer.add_scalar("train/loss_ce", metrics["loss_ce"], step)
 		if "gan_loss_d" in metrics:
@@ -319,6 +356,52 @@ def main(cfg: DictConfig) -> None:
 	)
 
 	pbar.close()
+	
+	# -------------------------
+	# Compute and save continual learning metrics
+	# -------------------------
+	log.info("Computing continual learning metrics...")
+	
+	# Compute all metrics
+	metrics_summary = compute_all_metrics(acc_matrix)
+	
+	# Log metrics summary
+	log.info(str(metrics_summary))
+	
+	# Log final metrics to TensorBoard
+	writer.add_scalar("final/average_accuracy", metrics_summary.average_accuracy, global_step)
+	writer.add_scalar("final/average_accuracy_best", metrics_summary.average_accuracy_best, global_step)
+	writer.add_scalar("final/last_task_accuracy", metrics_summary.last_task_accuracy, global_step)
+	writer.add_scalar("final/last_task_accuracy_best", metrics_summary.last_task_accuracy_best, global_step)
+	writer.add_scalar("final/forgetting_measure", metrics_summary.forgetting_measure, global_step)
+	writer.add_scalar("final/backward_transfer", metrics_summary.backward_transfer, global_step)
+	writer.add_scalar("final/forward_transfer", metrics_summary.forward_transfer, global_step)
+	
+	# Save metrics to files
+	save_metrics(metrics_summary, log_dir, "metrics.json")
+	save_accuracy_matrix_csv(acc_matrix, log_dir, "accuracy_matrix.csv")
+	
+	# -------------------------
+	# Generate sample images from the GAN
+	# -------------------------
+	log.info("Generating sample images from GAN...")
+	samples_dir = log_dir / "generated_samples"
+	samples_dir.mkdir(parents=True, exist_ok=True)
+	
+	# Get GAN's z_dim from config
+	z_dim = cfg.gan.get("z_dim", 128)
+	
+	# Generate 4 images per class for all known classes
+	generate_and_save_samples(
+		generator=algo.server.replay.G,
+		known_classes=seen_classes,
+		output_dir=samples_dir,
+		num_samples_per_class=4,
+		z_dim=z_dim,
+		device=device,
+		filename="all_classes_samples.png",
+	)
+	
 	writer.close()
 	total_time = time.time() - start_time
 	log.info(f"Finished training in {format_seconds(total_time)}. Logs at {log_dir}")

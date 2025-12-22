@@ -29,7 +29,7 @@ federated:
 # Training Hyperparameters
 # -------------------------
 training:
-  global_rounds: 30
+  global_rounds: 10
   local_epochs: 3
   batch_size: 64
   eval_batch_size: 512
@@ -44,7 +44,7 @@ training:
 # -------------------------
 model:
   classification_head_type: multilayer  # singlehead or multilayer
-  hidden_dim: 256  # Hidden dimension for multilayer classifier
+  hidden_dim: 128  # Hidden dimension for multilayer classifier
 
 # -------------------------
 # Replay Configuration
