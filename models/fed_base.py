@@ -146,17 +146,17 @@ class IncrementalNet(nn.Module):
     Backbone + (expandable) classifier head.
     Classifier type can be "singlehead" or "multilayer".
     """
-    def __init__(self, backbone: nn.Module, feat_dim: int, num_classes: int, type="singlehead", hidden_dim: Optional[int] = None):
+    def __init__(self, backbone: nn.Module, feat_dim: int, num_classes: int, classification_head_type="singlehead", hidden_dim: Optional[int] = None):
         super().__init__()
         self.backbone = backbone
-        if type == "singlehead":
+        if classification_head_type == "singlehead":
             self.classifier = IncrementalClassifier(feat_dim, num_classes)
-        elif type == "multilayer":
+        elif classification_head_type == "multilayer":
             if hidden_dim is None:
                 raise ValueError("hidden_dim must be specified for multilayer classifier")
             self.classifier = MultilayerIncrementalClassifier(feat_dim, num_classes, hidden_dim)
         else:
-            raise ValueError(f"Unknown classifier type in IncrementalNet: {type}")
+            raise ValueError(f"Unknown classifier type in IncrementalNet: {classification_head_type}")
 
     def expand_classes(self, num_new: int) -> None:
         self.classifier.expand(num_new)

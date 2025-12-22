@@ -152,6 +152,8 @@ def main(cfg: DictConfig) -> None:
 		batch_size=cfg.training.batch_size,
 		replay_ratio=cfg.replay.ratio,
 		max_grad_norm=cfg.training.max_grad_norm,
+		classification_head_type=cfg.model.classification_head_type,
+		hidden_dim=cfg.model.hidden_dim
 	)
 	server_cfg = ServerConfig(
 		global_rounds=cfg.training.global_rounds,

@@ -15,7 +15,9 @@ class ClientConfig:
     gan_weight_decay: float = 0.0
     batch_size: int = 64
     replay_ratio: float = 0.5              # replay samples per real batch (0..1)
-    max_grad_norm: Optional[float] = None
+    max_grad_norm: Optional[float] = None,  # gradient clipping
+    classification_head_type: str = "singlehead"  # "singlehead" or "multilayer"
+    hidden_dim: Optional[int] = None        # for multilayer classifier only
 
 
 @dataclass
