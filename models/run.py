@@ -21,6 +21,8 @@ Usage:
 
 from __future__ import annotations
 
+import atexit
+import gc
 import logging
 import os
 import time
@@ -34,9 +36,24 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 log = logging.getLogger(__name__)
 
 import torch
+import torch.multiprocessing as mp
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+
+# Set multiprocessing start method to 'spawn' for safer cleanup
+# This must be done before any multiprocessing is used
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass  # Already set
+
+# Use file_descriptor sharing strategy which is more reliable for cleanup
+# than the default file_system strategy that creates pymp-* directories
+try:
+    torch.multiprocessing.set_sharing_strategy('file_descriptor')
+except RuntimeError:
+    pass  # Already set or not supported
 
 import hydra
 from hydra.core.config_store import ConfigStore
@@ -45,6 +62,36 @@ from omegaconf import DictConfig, OmegaConf
 from data_utils import CIFARTaskStream
 from config import ClientConfig, ServerConfig, TaskInfo
 from example_method import ExampleFedAvgWithGANReplay
+
+
+# -------------------------
+# Cleanup utilities for multiprocessing
+# -------------------------
+def cleanup_multiprocessing():
+    """
+    Clean up multiprocessing resources to avoid 'Device or resource busy' errors
+    in Hydra multirun sweeps. This ensures DataLoader workers and shared memory
+    are properly released between runs.
+    """
+    # Force garbage collection to release DataLoader references
+    gc.collect()
+    
+    # Give workers time to shutdown gracefully
+    time.sleep(0.5)
+    
+    # Clear CUDA cache if available
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    
+    # Force another GC pass
+    gc.collect()
+    
+    log.info("Cleanup completed: multiprocessing resources released")
+
+
+# Register cleanup on exit as a safety measure
+atexit.register(cleanup_multiprocessing)
 
 
 # -------------------------
@@ -269,6 +316,12 @@ def main(cfg: DictConfig) -> None:
 	config_path = log_dir / "config.yaml"
 	OmegaConf.save(cfg, config_path)
 	log.info(f"Configuration saved to {config_path}")
+	
+	# Clean up multiprocessing resources before next Hydra multirun iteration
+	# This prevents "Device or resource busy" errors on temp directories
+	del stream  # Release DataLoader references
+	del algo    # Release model and client references
+	cleanup_multiprocessing()
 
 
 if __name__ == "__main__":

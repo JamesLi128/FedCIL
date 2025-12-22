@@ -73,7 +73,7 @@ gan:
 # -------------------------
 system:
   seed: 42
-  num_workers: 16
+  num_workers: 6
   max_concurrent_clients: 2
   cache_dir: /home/hli54/.cache
   cpu: false  # Force CPU execution

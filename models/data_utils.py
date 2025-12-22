@@ -143,6 +143,7 @@ class CIFARTaskStream:
 					shuffle=True,
 					num_workers=num_workers,
 					pin_memory=(device.type == "cuda"),
+					persistent_workers=False,  # Ensure workers terminate for cleanup
 				)
 
 			for c in task_classes:
@@ -155,6 +156,7 @@ class CIFARTaskStream:
 				shuffle=False,
 				num_workers=num_workers,
 				pin_memory=(device.type == "cuda"),
+				persistent_workers=False,  # Ensure workers terminate for cleanup
 			)
 
 			self.tasks.append((new_info, loaders, eval_loader, list(seen)))
