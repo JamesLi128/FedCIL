@@ -3,6 +3,7 @@
 # ==============================
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -15,82 +16,144 @@ from fed_base import ReplayStrategy
 from config import GANReplayConfig
 
 
+def compute_deconv_layers(target_size: int, start_size: int = 4) -> List[Tuple[int, int, int]]:
+    """
+    Compute the number of transposed conv layers needed to reach target_size.
+    
+    Returns list of (kernel_size, stride, padding) for each layer.
+    For standard DCGAN-style upsampling: kernel=4, stride=2, padding=1 doubles size.
+    """
+    layers = []
+    current_size = start_size
+    while current_size < target_size:
+        layers.append((4, 2, 1))  # Standard DCGAN upsampling
+        current_size *= 2
+    return layers
+
+
 class CondGenerator(nn.Module):
     """
-    Tiny conditional DCGAN-ish generator for 32x32 images.
+    Conditional DCGAN-style generator supporting multiple output sizes.
+    Supports 28x28 (MNIST), 32x32 (CIFAR), 64x64, etc.
     """
-    def __init__(self, z_dim: int, num_classes: int, img_channels: int = 3, base: int = 64):
+    def __init__(
+        self, 
+        z_dim: int, 
+        num_classes: int, 
+        img_channels: int = 3, 
+        img_size: int = 32,
+        base: int = 64
+    ):
         super().__init__()
         self.z_dim = z_dim
         self.num_classes = num_classes
+        self.img_channels = img_channels
+        self.img_size = img_size
+        
         self.embed = nn.Embedding(num_classes, z_dim)
-
+        
+        # Determine architecture based on target image size
+        # We start from 4x4 and upsample
+        self.start_size = 4
+        num_upsamples = int(math.log2(img_size / self.start_size))
+        
+        # Calculate channel progression (decreasing as we upsample)
+        # More upsamples = need more initial channels
+        self.init_channels = base * (2 ** num_upsamples)
+        
+        # Initial projection: z + label_embed -> spatial features
         self.net = nn.Sequential(
-            nn.Linear(z_dim + z_dim, base * 4 * 4 * 4),
+            nn.Linear(z_dim + z_dim, self.init_channels * self.start_size * self.start_size),
             nn.ReLU(True),
         )
-        self.deconv = nn.Sequential(
-            nn.ConvTranspose2d(base * 4, base * 2, 4, 2, 1),  # 8x8
-            nn.BatchNorm2d(base * 2),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(base * 2, base, 4, 2, 1),      # 16x16
-            nn.BatchNorm2d(base),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(base, img_channels, 4, 2, 1),  # 32x32
+        
+        # Build upsampling layers dynamically
+        deconv_layers = []
+        in_ch = self.init_channels
+        
+        for i in range(num_upsamples):
+            out_ch = in_ch // 2 if i < num_upsamples - 1 else base
+            deconv_layers.extend([
+                nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1),
+                nn.BatchNorm2d(out_ch),
+                nn.ReLU(True),
+            ])
+            in_ch = out_ch
+        
+        # Final conv to get correct number of channels
+        deconv_layers.extend([
+            nn.Conv2d(base, img_channels, 3, 1, 1),
             nn.Tanh(),
-        )
+        ])
+        
+        self.deconv = nn.Sequential(*deconv_layers)
+        
+        # Handle non-power-of-2 sizes (e.g., 28x28 for MNIST)
+        self.final_size = self.start_size * (2 ** num_upsamples)
+        self.needs_resize = (self.final_size != img_size)
 
     def forward(self, z: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         zy = torch.cat([z, self.embed(y)], dim=1)
         h = self.net(zy)
-        h = h.view(h.size(0), -1, 4, 4)
-        # entries in [-1, 1], map to [0, 1] 
-        x_rep = (self.deconv(h) + 1.0) / 2.0
+        h = h.view(h.size(0), self.init_channels, self.start_size, self.start_size)
+        x = self.deconv(h)
+        
+        # Resize if needed (for non-power-of-2 sizes like 28x28)
+        if self.needs_resize:
+            x = F.interpolate(x, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
+        
+        # Map from [-1, 1] to [0, 1]
+        x_rep = (x + 1.0) / 2.0
         return x_rep
 
 
 class CondDiscriminator(nn.Module):
     """
-    Conditional discriminator for 224x224 images with concatenated label embedding.
-    Designed to handle images transformed for ResNet18 input size.
+    Conditional discriminator for various image sizes with concatenated label embedding.
+    Uses ResNet18 backbone for feature extraction (designed for images resized to 224x224).
     """
-    def __init__(self, num_classes: int, img_channels: int = 3, base: int = 64, embed_dim: int = 32):
+    def __init__(
+        self, 
+        num_classes: int, 
+        img_channels: int = 3, 
+        embed_dim: int = 32,
+        input_size: int = 224
+    ):
         super().__init__()
         self.num_classes = num_classes
         self.embed_dim = embed_dim
+        self.img_channels = img_channels
+        self.input_size = input_size
         self.embed = nn.Embedding(num_classes, embed_dim)
 
-        # Feature extraction for 224x224 images
-        # 224 -> 112 -> 56 -> 28 -> 14 -> 7
-        # self.conv = nn.Sequential(
-        #     nn.Conv2d(img_channels, base, 4, 2, 1),        # 224 -> 112
-        #     nn.LeakyReLU(0.2, True),
-        #     nn.Conv2d(base, base * 2, 4, 2, 1),            # 112 -> 56
-        #     nn.BatchNorm2d(base * 2),
-        #     nn.LeakyReLU(0.2, True),
-        #     nn.Conv2d(base * 2, base * 4, 4, 2, 1),        # 56 -> 28
-        #     nn.BatchNorm2d(base * 4),
-        #     nn.LeakyReLU(0.2, True),
-        #     nn.Conv2d(base * 4, base * 8, 4, 2, 1),        # 28 -> 14
-        #     nn.BatchNorm2d(base * 8),
-        #     nn.LeakyReLU(0.2, True),
-        #     nn.Conv2d(base * 8, base * 8, 4, 2, 1),        # 14 -> 7
-        #     nn.BatchNorm2d(base * 8),
-        #     nn.LeakyReLU(0.2, True),
-        # )
-        
-        # # Adaptive pooling to ensure consistent spatial size
-        # self.pool = nn.AdaptiveAvgPool2d((4, 4))
-        
-        # # Feature size after pooling: base * 8 * 4 * 4 = 512 * 16 = 8192
-        # feature_size = base * 8 * 4 * 4
-
         # Use pretrained ResNet18 backbone for better feature extraction
+        # Note: Input images should already be transformed to 224x224 by the data pipeline
         resnet18 = models.resnet18(pretrained=True)
+        
+        # If input is not 3-channel RGB, we need to modify the first conv layer
+        if img_channels != 3:
+            # Replace first conv layer to accept different channel count
+            old_conv = resnet18.conv1
+            resnet18.conv1 = nn.Conv2d(
+                img_channels, old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=old_conv.bias is not None
+            )
+            # Initialize new conv weights by averaging/replicating old weights
+            with torch.no_grad():
+                if img_channels == 1:
+                    # Average RGB weights for grayscale
+                    resnet18.conv1.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
+                else:
+                    # For other channel counts, initialize randomly
+                    nn.init.kaiming_normal_(resnet18.conv1.weight, mode='fan_out', nonlinearity='relu')
+        
         # Remove the FC layer and only take features
-        self.conv = nn.Sequential(*list(resnet18.children())[:-1])  # Remove FC layer
+        self.conv = nn.Sequential(*list(resnet18.children())[:-1])
 
-        # freeze ResNet18 parameters
+        # Freeze ResNet18 parameters
         for param in self.conv.parameters():
             param.requires_grad = False
         
@@ -102,7 +165,6 @@ class CondDiscriminator(nn.Module):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         h = self.conv(x)
-        # h = self.pool(h)
         h = h.flatten(1)
         
         # Concatenate label embedding to extracted features
@@ -128,8 +190,22 @@ class ClientGANReplay(ReplayStrategy):
     ):
         self.cfg = cfg
         self.device = device
-        self.G = CondGenerator(cfg.z_dim, cfg.num_total_classes, cfg.img_channels).to(device)
-        self.D = CondDiscriminator(cfg.num_total_classes, cfg.img_channels).to(device)
+        
+        # Create generator with appropriate image size and channels
+        self.G = CondGenerator(
+            z_dim=cfg.z_dim, 
+            num_classes=cfg.num_total_classes, 
+            img_channels=cfg.img_channels,
+            img_size=cfg.generator_img_size,
+        ).to(device)
+        
+        # Discriminator works on transformed images (resized, potentially RGB-converted)
+        self.D = CondDiscriminator(
+            num_classes=cfg.num_total_classes, 
+            img_channels=cfg.discriminator_img_channels,
+            input_size=cfg.discriminator_img_size,
+        ).to(device)
+        
         self._sample_transform = sample_transform
 
         self._known_classes: List[int] = []
@@ -163,6 +239,10 @@ class ClientGANReplay(ReplayStrategy):
     def train_gan_on_batch(self, x_real: torch.Tensor, y_real: torch.Tensor) -> Dict[str, float]:
         """
         One GAN update (or a few) for a single real batch.
+        
+        Note: x_real should already be in the discriminator's expected format (e.g., RGB 224x224).
+        The generator produces images in native format (e.g., grayscale 28x28 for MNIST),
+        which are then transformed via _sample_transform before passing to the discriminator.
         """
         bsz = x_real.size(0)
         
@@ -179,7 +259,12 @@ class ClientGANReplay(ReplayStrategy):
 
         # --- D step
         for _ in range(self.cfg.gan_steps_per_batch):
-            x_fake = self.G(z, y).detach()
+            x_fake_raw = self.G(z, y).detach()
+            # Transform fake images to match discriminator's expected input format
+            if self._sample_transform is not None:
+                x_fake = self._sample_transform(x_fake_raw)
+            else:
+                x_fake = x_fake_raw
             d_real = self.D(x_real, y)
             d_fake = self.D(x_fake, y)
             loss_d = F.binary_cross_entropy_with_logits(d_real, torch.ones_like(d_real)) + \
@@ -190,7 +275,12 @@ class ClientGANReplay(ReplayStrategy):
 
         # --- G step
         z2 = torch.randn(bsz, self.cfg.z_dim, device=self.device)
-        x_fake2 = self.G(z2, y)
+        x_fake2_raw = self.G(z2, y)
+        # Transform fake images for discriminator (need gradients to flow through)
+        if self._sample_transform is not None:
+            x_fake2 = self._sample_transform(x_fake2_raw)
+        else:
+            x_fake2 = x_fake2_raw
         d_fake2 = self.D(x_fake2, y)
         loss_g = F.binary_cross_entropy_with_logits(d_fake2, torch.ones_like(d_fake2))
         self._opt_g.zero_grad(set_to_none=True)

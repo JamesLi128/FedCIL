@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=nc5cpr3-cat-label-embed-cifar10
+#SBATCH --job-name=test-mnist
 #SBATCH --partition=gpuq
 #SBATCH --qos=gpu                       # required for gpuq on Hopper
-#SBATCH --output=/home/hli54/scratch/logs/fcil/cifar10/slurm-log/%j-out.log
-#SBATCH --error=/home/hli54/scratch/logs/fcil/cifar10/slurm-log/%j-err.log
+#SBATCH --output=/home/hli54/scratch/logs/fcil/slurm-log/%j-out.log
+#SBATCH --error=/home/hli54/scratch/logs/fcil/slurm-log/%j-err.log
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -74,7 +74,9 @@ export PYTHONUNBUFFERED=1
 #     python run.py --config-path=../config/cifar10 --config-name=$config
 # done
 
-python run.py --config-path=/home/hli54/Projects/FCIL/config/cifar10 --config-name=nc5cpr3 -m
+python run.py --config-path=/home/hli54/Projects/FCIL/config/mnist --config-name=mnist -m
+
+# python run.py --config-path=/home/hli54/Projects/FCIL/config/cifar10 --config-name=nc5cpr3 -m
 
 
 echo "Job completed at $(date)"

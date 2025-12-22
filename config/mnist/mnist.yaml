@@ -1,5 +1,5 @@
 # @package _global_
-# CIFAR-10 Federated Class-Incremental Learning Configuration
+# MNIST Federated Class-Incremental Learning Configuration
 
 defaults:
   - _self_
@@ -8,14 +8,14 @@ defaults:
 # Dataset & Data Loading
 # -------------------------
 dataset:
-  name: cifar10
+  name: mnist
   data_root: /home/hli54/data
   num_classes: 10
   img_size: 224  # Resize for ResNet18
-  original_img_size: 32  # Original CIFAR size (for generator)
-  img_channels: 3  # RGB
+  original_img_size: 28  # Original MNIST size (for generator)
+  img_channels: 1  # MNIST is grayscale
   classes_per_task: 2
-  convert_grayscale_to_rgb: false  # Already RGB
+  convert_grayscale_to_rgb: true  # Convert to RGB for ResNet compatibility
 
 # -------------------------
 # Federated Learning Setup
@@ -29,8 +29,8 @@ federated:
 # Training Hyperparameters
 # -------------------------
 training:
-  global_rounds: 5
-  local_epochs: 1
+  global_rounds: 30
+  local_epochs: 3
   batch_size: 64
   eval_batch_size: 512
   lr: 1e-3
@@ -39,25 +39,24 @@ training:
   gan_weight_decay: 0.0005
   max_grad_norm: null
 
-
 # -------------------------
 # Model Configuration
 # -------------------------
 model:
-  classification_head_type: singlehead  # singlehead or multilayer
-  hidden_dim: 0  # Hidden dimension for multilayer classifier
+  classification_head_type: multilayer  # singlehead or multilayer
+  hidden_dim: 256  # Hidden dimension for multilayer classifier
 
 # -------------------------
 # Replay Configuration
 # -------------------------
 replay:
-  ratio: 0.5  # Replay samples per real batch (0..1)
+  ratio: 1.0  # Replay samples per real batch (0..1)
 
 # -------------------------
 # Server Optimization
 # -------------------------
 server:
-  opt_steps: 0  # Server-side optimization steps
+  opt_steps: 3  # Server-side optimization steps
   opt_lr: 1e-4
   replay_batch: 128  # Synthetic batch size for server steps
 
@@ -67,9 +66,10 @@ server:
 gan:
   z_dim: 128
   lr: 2e-4
-  label_embed_dim: 128
+  label_embed_dim: 64
   steps_per_batch: 1
-  img_channels: 3
+  # Generator produces grayscale 28x28 images (native MNIST)
+  # Discriminator sees RGB 224x224 (after transforms)
 
 # -------------------------
 # System & Paths
@@ -85,7 +85,7 @@ system:
 # Logging
 # -------------------------
 logging:
-  log_dir: /home/hli54/scratch/logs/hydra-test/
+  log_dir: /home/hli54/scratch/logs/fcil/mnist/
   eval_every: 1  # Rounds between evals (per task)
 
 # -------------------------

@@ -59,7 +59,7 @@ import hydra
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
-from data_utils import CIFARTaskStream
+from data_utils import TaskStream
 from config import ClientConfig, ServerConfig, TaskInfo
 from example_method import ExampleFedAvgWithGANReplay
 
@@ -175,7 +175,11 @@ def main(cfg: DictConfig) -> None:
 	torch.backends.cudnn.benchmark = True
 
 	data_root = str(Path(cfg.dataset.data_root).expanduser())
-	stream = CIFARTaskStream(
+	
+	# Get optional dataset configuration with defaults
+	convert_grayscale_to_rgb = cfg.dataset.get("convert_grayscale_to_rgb", True)
+	
+	stream = TaskStream(
 		dataset=cfg.dataset.name,
 		data_root=data_root,
 		img_size=cfg.dataset.img_size,
@@ -187,6 +191,7 @@ def main(cfg: DictConfig) -> None:
 		num_workers=cfg.system.num_workers,
 		seed=cfg.system.seed,
 		device=device,
+		convert_grayscale_to_rgb=convert_grayscale_to_rgb,
 	)
 
 	total_classes = stream.num_classes
@@ -220,6 +225,12 @@ def main(cfg: DictConfig) -> None:
 		server_cfg=server_cfg,
 		device=device,
 		sample_transform=gan_sample_transform,
+		# Pass dataset-specific info for dynamic model/GAN configuration
+		generator_img_channels=stream.generator_channels,
+		generator_img_size=stream.generator_img_size,
+		discriminator_img_channels=stream.input_channels,  # After RGB conversion if any
+		discriminator_img_size=cfg.dataset.img_size,  # Target size for ResNet
+		model_input_channels=stream.input_channels,
 	)
 
 	total_rounds = len(stream) * server_cfg.global_rounds

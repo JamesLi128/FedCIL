@@ -19,9 +19,12 @@ from config import GANReplayConfig
 from copy import deepcopy
 
 
-def build_frozen_pretrained_resnet18_backbone() -> tuple[nn.Module, int]:
+def build_frozen_pretrained_resnet18_backbone(input_channels: int = 3) -> tuple[nn.Module, int]:
     """
     Returns (backbone, feat_dim). The backbone outputs a feature vector.
+    
+    Args:
+        input_channels: Number of input channels (1 for grayscale, 3 for RGB)
     """
     try:
         from torchvision.models import resnet18, ResNet18_Weights
@@ -32,6 +35,25 @@ def build_frozen_pretrained_resnet18_backbone() -> tuple[nn.Module, int]:
 
     feat_dim = m.fc.in_features
     m.fc = nn.Identity()
+
+    # Modify first conv layer if input channels != 3
+    if input_channels != 3:
+        old_conv = m.conv1
+        m.conv1 = nn.Conv2d(
+            input_channels, old_conv.out_channels,
+            kernel_size=old_conv.kernel_size,
+            stride=old_conv.stride,
+            padding=old_conv.padding,
+            bias=old_conv.bias is not None
+        )
+        # Initialize new conv weights
+        with torch.no_grad():
+            if input_channels == 1:
+                # Average RGB weights for grayscale
+                m.conv1.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
+            else:
+                # For other channel counts, initialize randomly
+                nn.init.kaiming_normal_(m.conv1.weight, mode='fan_out', nonlinearity='relu')
 
     # freeze all parameters except fc
     for p in m.parameters():
@@ -144,12 +166,26 @@ class ExampleFedAvgWithGANReplay(BaseFCILAlgorithm):
         server_cfg: ServerConfig,
         device: torch.device,
         sample_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+        # Dataset-specific configuration
+        generator_img_channels: int = 3,
+        generator_img_size: int = 32,
+        discriminator_img_channels: int = 3,
+        discriminator_img_size: int = 224,
+        model_input_channels: int = 3,
     ) -> None:
-        backbone, feat_dim = build_frozen_pretrained_resnet18_backbone()
+        backbone, feat_dim = build_frozen_pretrained_resnet18_backbone(input_channels=model_input_channels)
         model = IncrementalNet(backbone, feat_dim, num_init_classes, classification_head_type=client_cfg.classification_head_type, hidden_dim=client_cfg.hidden_dim)
 
-        # Global generator on server
-        gan_cfg = GANReplayConfig(num_total_classes=total_num_classes, gan_lr=client_cfg.gan_lr, gan_weight_decay=client_cfg.gan_weight_decay)
+        # Global generator on server with dataset-specific configuration
+        gan_cfg = GANReplayConfig(
+            num_total_classes=total_num_classes, 
+            gan_lr=client_cfg.gan_lr, 
+            gan_weight_decay=client_cfg.gan_weight_decay,
+            img_channels=generator_img_channels,
+            generator_img_size=generator_img_size,
+            discriminator_img_channels=discriminator_img_channels,
+            discriminator_img_size=discriminator_img_size,
+        )
         server_replay = ClientGANReplay(gan_cfg, device=device, sample_transform=sample_transform)
 
         server = FedAvgGANServer(model=model, replay=server_replay, cfg=server_cfg, device=device)

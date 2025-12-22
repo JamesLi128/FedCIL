@@ -58,5 +58,8 @@ class GANReplayConfig:
     gan_lr: float = 2e-4
     gan_weight_decay: float = 0.0005
     gan_steps_per_batch: int = 1
-    img_channels: int = 3
+    img_channels: int = 3  # Generator output channels (matches dataset)
     num_total_classes: int = 100  # global label space size (e.g., CIFAR-100)
+    generator_img_size: int = 32  # Size of generated images (original dataset size)
+    discriminator_img_channels: int = 3  # Discriminator input channels (may differ if RGB conversion)
+    discriminator_img_size: int = 224  # Size discriminator expects (after transforms)
