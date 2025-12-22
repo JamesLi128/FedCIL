@@ -64,6 +64,7 @@ server:
 gan:
   z_dim: 128
   lr: 2e-4
+  label_embed_dim: 128
   steps_per_batch: 1
   img_channels: 3
 

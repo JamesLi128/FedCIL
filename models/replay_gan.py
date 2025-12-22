@@ -26,7 +26,7 @@ class CondGenerator(nn.Module):
         self.embed = nn.Embedding(num_classes, z_dim)
 
         self.net = nn.Sequential(
-            nn.Linear(z_dim, base * 4 * 4 * 4),
+            nn.Linear(z_dim + z_dim, base * 4 * 4 * 4),
             nn.ReLU(True),
         )
         self.deconv = nn.Sequential(
@@ -41,7 +41,7 @@ class CondGenerator(nn.Module):
         )
 
     def forward(self, z: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        zy = z + self.embed(y)
+        zy = torch.cat([z, self.embed(y)], dim=1)
         h = self.net(zy)
         h = h.view(h.size(0), -1, 4, 4)
         # entries in [-1, 1], map to [0, 1] 

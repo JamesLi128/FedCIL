@@ -54,6 +54,7 @@ class ServerPayload:
 @dataclass
 class GANReplayConfig:
     z_dim: int = 128
+    label_embed_dim: int = 128
     gan_lr: float = 2e-4
     gan_weight_decay: float = 0.0005
     gan_steps_per_batch: int = 1

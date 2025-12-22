@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=nc5cpr3-server-replay-cifar10
+#SBATCH --job-name=nc5cpr3-cat-label-embed-cifar10
 #SBATCH --partition=gpuq
 #SBATCH --qos=gpu                       # required for gpuq on Hopper
 #SBATCH --output=/home/hli54/scratch/logs/fcil/cifar10/slurm-log/%j-out.log

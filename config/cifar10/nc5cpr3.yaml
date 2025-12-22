@@ -9,13 +9,13 @@ defaults:
 
 # Override logging directory for this sweep
 logging:
-  log_dir: /home/hli54/scratch/logs/fcil/cifar10/nc5cpr3/server-replay-sweep
+  log_dir: /home/hli54/scratch/logs/fcil/cifar10/nc5cpr3/gan-cat-label-embed-sweep/
 
 hydra:
   mode: MULTIRUN
   sweep:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: server-steps-${server.opt_steps}_server-lr-${server.opt_lr}
+    subdir: label-embed-dim-${gan.label_embed_dim}
   sweeper:
     params:
       # federated
@@ -32,9 +32,12 @@ hydra:
       training.gan_lr: 1e-3
       training.lr: 1e-3
 
+      # gan
+      gan.label_embed_dim: 32, 64, 128
+
       # replay
       replay.ratio: 1.0
 
       # server
-      server.opt_steps: 5, 10
-      server.opt_lr: 1e-3, 5e-4
+      server.opt_steps: 5
+      server.opt_lr: 1e-3
