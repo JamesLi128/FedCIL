@@ -9,22 +9,24 @@ defaults:
 
 # Override logging directory for this sweep
 logging:
-  log_dir: /home/hli54/scratch/logs/fcil/cifar10/nc5cpr3/multilayer-hidden_dim-sweep
+  log_dir: /home/hli54/scratch/logs/fcil/cifar10/nc5cpr3/server-replay-sweep
 
 hydra:
   mode: MULTIRUN
   sweep:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: hidden_dim_${training.hidden_dim}
+    subdir: hidden_dim_${model.hidden_dim}
   sweeper:
     params:
       # federated
       federated.num_clients: 5
-      federated.clients_per_round: 3      
+      federated.clients_per_round: 3     
+
+      # model 
+      model.classification_head_type: multilayer
+      model.hidden_dim: 256
 
       # training
-      training.classification_head_type: multilayer
-      training.hidden_dim: 128, 256, 512
       training.global_rounds: 50
       training.local_epochs: 5
       training.gan_lr: 1e-3
@@ -32,3 +34,7 @@ hydra:
 
       # replay
       replay.ratio: 1.0
+
+      # server
+      server.opt_steps: 5, 10
+      server.opt_lr: 1e-3, 5e-4

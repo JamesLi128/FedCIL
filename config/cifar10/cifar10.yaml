@@ -31,12 +31,18 @@ training:
   batch_size: 64
   eval_batch_size: 512
   lr: 1e-3
-  classification_head_type: singlehead  # singlehead or multilayer
-  hidden_dim: 0  # Hidden dimension for multilayer classifier
   gan_lr: 2e-4
   weight_decay: 0.0001
   gan_weight_decay: 0.0005
   max_grad_norm: null
+
+
+# -------------------------
+# Model Configuration
+# -------------------------
+model:
+  classification_head_type: singlehead  # singlehead or multilayer
+  hidden_dim: 0  # Hidden dimension for multilayer classifier
 
 # -------------------------
 # Replay Configuration
