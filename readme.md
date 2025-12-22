@@ -8,6 +8,11 @@
 - Concatenate label embed to z instead of add to z
 - ACGAN integration.
 - ImageNet-family dataset integration
+- better result analytics. 
+    1. average accuracy (pick the highest for each task and then average)
+    2. average forgetting (this needs the accuracy of all the global rounds for each task)
+    3. for each known class, generate 4 images and put them in one big image with 1 row and 4 columns, each image takes a column place
+    4. 
 
 
 - Understand how FedGTEA worked and plot a roadmap
