@@ -7,6 +7,7 @@
 - fight-forgetting: penalize excessive update by penalizing gradient norm $\gamma \|g\|$ in the loss function (this seems not working very well)
 - fight-forgetting: EWC (seems not working for FCIL)
 - fight-forgetting: knowledge-distillation (seems working the best)
+    1. client-level distillation using the previous global model
 
 - better result analytics. 
     1. average accuracy (pick the highest for each task and then average)
@@ -26,5 +27,5 @@
 - multilayer classification head doesn't work better than singlehead, at least for embed dim = 128
 - cat embedding didn't work very well
 - implemented a general framework to load any dataset by configuring the hydra yaml file
-- Curernt framework is already ACGAN, only separated the classification head as IncrementalNet.
 - ACGAN is very important. Auxiliary head loss propogation is crutial for generator to learn conditional generation.
+- ACGAN worked very well. On mnist, the accuracy surged around 10% by the last task

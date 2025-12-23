@@ -107,7 +107,7 @@ logging:
 # -------------------------
 hydra:
   run:
-    dir: ${logging.log_dir}/${now:%Y-%m-%d}/dis_distill-${now:%H-%M-%S}
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/client_distill_prev_global_model-${now:%H-%M-%S}
   sweep:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
     subdir: acgan

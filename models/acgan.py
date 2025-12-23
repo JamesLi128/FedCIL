@@ -561,6 +561,7 @@ class IncrementalACGAN(nn.Module):
     def KL_distill_from(self, prev_model: IncrementalACGAN, x: torch.Tensor, y: torch.Tensor) -> None:
         """
         Distill knowledge from previous model using generated samples.
+        Use KL divergence to match auxiliary classifier outputs.
         
         Args:
             prev_model: Previous IncrementalACGAN model
@@ -572,19 +573,18 @@ class IncrementalACGAN(nn.Module):
         
         # Get previous model's predictions
         with torch.no_grad():
-            prev_dis_logits, prev_aux_logits = prev_model.D(x)
-            prev_dis_probs, prev_aux_probs = torch.sigmoid(prev_dis_logits), F.softmax(prev_aux_logits, dim=1)
+            _, prev_aux_logits = prev_model.D(x)
+            prev_aux_probs = F.softmax(prev_aux_logits, dim=1)
             
         
         # Current model's predictions
-        curr_dis_logits, curr_aux_logits = self.D(x)
-        curr_dis_probs, curr_aux_probs = torch.sigmoid(curr_dis_logits), F.softmax(curr_aux_logits, dim=1)
+        _, curr_aux_logits = self.D(x)
+        curr_aux_probs = F.softmax(curr_aux_logits, dim=1)
 
         # Use KL divergence for distillation
-        dis_loss = F.kl_div(curr_dis_probs.log(), prev_dis_probs, reduction='batchmean')
         aux_loss = F.kl_div(curr_aux_probs.log(), prev_aux_probs, reduction='batchmean')
 
-        loss_distill = dis_loss + aux_loss
+        loss_distill = aux_loss
         loss_distill.backward()
         self.d_optimizer.step()
 

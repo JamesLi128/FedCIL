@@ -395,13 +395,17 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
                 for cid in chosen:
                     c = self.clients[cid]
                     c.load_server_payload(payload)
-                    upd = c.fit_one_task(task, per_client_loaders[cid], prev_global_model=self.prev_global_model)
+                    upd = c.fit_one_task(task, per_client_loaders[cid], prev_global_model=prev_global_model)
                     updates.append(upd)
                 
                 self.server.aggregate(updates)
                 self.server.server_optimize_step()
 
-                self.prev_global_model = deepcopy(self.server.model)
+                with torch.no_grad():
+                    self.prev_global_model = deepcopy(self.server.model)
+                    for param in self.prev_global_model.parameters():
+                        param.requires_grad = False
+                    self.prev_global_model.eval()
                 
                 if round_hook is not None:
                     # Convert to standard ClientUpdate for metrics
