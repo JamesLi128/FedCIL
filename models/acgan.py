@@ -488,6 +488,7 @@ class IncrementalACGAN(nn.Module):
         self, 
         x_real: torch.Tensor, 
         y_real: torch.Tensor,
+        sample_classes: List[int],
         n_replay: int = 0,
     ) -> Dict[str, float]:
         """
@@ -496,6 +497,7 @@ class IncrementalACGAN(nn.Module):
         Args:
             x_real: Real images in range [-1, 1], shape (batch, C, H, W)
             y_real: Real labels, shape (batch,)
+            known_classes: List of known class labels
             n_replay: Number of replay samples to generate
         
         Returns:
@@ -517,7 +519,23 @@ class IncrementalACGAN(nn.Module):
         self.d_optimizer.zero_grad()
 
         # Generate fake images
-        x_fake_raw, y_fake = self.sample(n=batch_size + n_replay)
+        # Sample random noise
+        z = torch.randn(n_replay, self.z_dim, device=device)
+
+        # Sample random labels from known classes, uniformly
+        if sample_classes and n_replay > 0:
+            y_fake = torch.tensor(
+                [sample_classes[i] for i in torch.randint(0, len(sample_classes), (n_replay,))],
+                dtype=torch.long,
+                device=device
+            )
+        else:
+            if n_replay > 0 and n_replay <= batch_size:
+                y_fake = y_real[:n_replay]
+            elif n_replay > 0 and n_replay > batch_size:
+                y_fake = torch.cat([y_real] * (n_replay // batch_size) + [y_real[:n_replay % batch_size]], dim=0)
+
+        x_fake_raw = self.G(z, y_fake)
         x_fake = x_fake_raw.detach()  # Detach to avoid gradients to G
 
         loss_d, loss_d_log, loss_aux_log = self.train_D_loss(x_real, y_real, x_fake, y_fake)
@@ -535,7 +553,18 @@ class IncrementalACGAN(nn.Module):
         
         # Generate fake images
         z = torch.randn(batch_size + n_replay, self.z_dim, device=device)
-        y_gen = torch.cat([y_real, torch.randint(0, self.num_classes, (n_replay,), device=device)], dim=0)
+        if sample_classes and n_replay > 0:
+            y_gen = torch.cat([y_real, torch.tensor(
+                [sample_classes[i] for i in torch.randint(0, len(sample_classes), (n_replay,))],
+                dtype=torch.long,
+                device=device
+            )], dim=0)
+        else:
+            if n_replay > 0 and n_replay <= batch_size:
+                y_gen = torch.cat([y_real, y_real[:n_replay]], dim=0)
+            elif n_replay > 0 and n_replay > batch_size:
+                y_gen = torch.cat([y_real] * (1 + n_replay // batch_size) + [y_real[:n_replay % batch_size]], dim=0)
+                
         x_fake = self.G(z, y_gen)
         
         loss_g = self.train_G_loss(x_fake, y_gen)

@@ -92,16 +92,18 @@ class ACGANClient(BaseClient):
         self.device = device
         self.model = model.to(device)
         self.cfg = cfg
+        self.prev_known_classes: List[int] = []
         self.known_classes: List[int] = []
         
         # Create replay wrapper for consistency with other code
         self.replay = ACGANReplayStrategy(model)
     
     def set_known_classes(self, known: List[int]) -> None:
+        self.prev_known_classes = self.known_classes
         self.known_classes = list(known)
         self.replay.set_known_classes(known)
     
-    def load_server_payload(self, payload: 'ACGANServerPayload') -> None:
+    def load_server_payload(self, payload: ACGANServerPayload) -> None:
         """Load state from server payload."""
         self.set_known_classes(payload.known_classes)
         
@@ -150,7 +152,7 @@ class ACGANClient(BaseClient):
                     n_rep = 0
                 
                 # Train ACGAN
-                step_metrics = self.model.train_step(x, y, n_replay=n_rep)
+                step_metrics = self.model.train_step(x, y, n_replay=n_rep, sample_classes=self.prev_known_classes)
 
                 # Distillation from previous global model if provided
                 if prev_global_model is not None:
