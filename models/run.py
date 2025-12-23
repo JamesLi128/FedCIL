@@ -62,6 +62,7 @@ from omegaconf import DictConfig, OmegaConf
 from data_utils import TaskStream
 from config import ClientConfig, ServerConfig, TaskInfo
 from example_method import ExampleFedAvgWithGANReplay
+from acgan_method import FedAvgWithACGAN
 from analyze_utils import (
     AccuracyMatrix,
     compute_all_metrics,
@@ -224,21 +225,48 @@ def main(cfg: DictConfig) -> None:
 
 	gan_sample_transform = stream.gan_sample_transform()
 
-	algo = ExampleFedAvgWithGANReplay(
-		num_clients=cfg.federated.num_clients,
-		num_init_classes=num_init,
-		total_num_classes=total_classes,
-		client_cfg=client_cfg,
-		server_cfg=server_cfg,
-		device=device,
-		sample_transform=gan_sample_transform,
-		# Pass dataset-specific info for dynamic model/GAN configuration
-		generator_img_channels=stream.generator_channels,
-		generator_img_size=stream.generator_img_size,
-		discriminator_img_channels=stream.input_channels,  # After RGB conversion if any
-		discriminator_img_size=cfg.dataset.img_size,  # Target size for ResNet
-		model_input_channels=stream.input_channels,
-	)
+	# Select algorithm based on client type configuration
+	client_type = cfg.get("client", {}).get("type", "fedavg_gan")
+	log.info(f"Using client type: {client_type}")
+	
+	if client_type == "acgan":
+		# ACGAN-based client: single model for classification and generation
+		acgan_cfg = cfg.get("acgan", {})
+		algo = FedAvgWithACGAN(
+			num_clients=cfg.federated.num_clients,
+			num_init_classes=num_init,
+			total_num_classes=total_classes,
+			client_cfg=client_cfg,
+			server_cfg=server_cfg,
+			device=device,
+			sample_transform=gan_sample_transform,
+			# ACGAN-specific configuration
+			z_dim=acgan_cfg.get("z_dim", 128),
+			img_channels=acgan_cfg.get("img_channels", stream.generator_channels),
+			img_size=acgan_cfg.get("img_size", stream.generator_img_size),
+			base_channels=acgan_cfg.get("base_channels", 64),
+			g_lr=acgan_cfg.get("g_lr", cfg.training.gan_lr),
+			d_lr=acgan_cfg.get("d_lr", cfg.training.gan_lr),
+		)
+	elif client_type == "fedavg_gan":
+		# Default: FedAvg with GAN replay (IncrementalNet + conditional GAN)
+		algo = ExampleFedAvgWithGANReplay(
+			num_clients=cfg.federated.num_clients,
+			num_init_classes=num_init,
+			total_num_classes=total_classes,
+			client_cfg=client_cfg,
+			server_cfg=server_cfg,
+			device=device,
+			sample_transform=gan_sample_transform,
+			# Pass dataset-specific info for dynamic model/GAN configuration
+			generator_img_channels=stream.generator_channels,
+			generator_img_size=stream.generator_img_size,
+			discriminator_img_channels=stream.input_channels,  # After RGB conversion if any
+			discriminator_img_size=cfg.dataset.img_size,  # Target size for ResNet
+			model_input_channels=stream.input_channels,
+		)
+	else:
+		raise ValueError(f"Unknown client type at algorithm initialization: {client_type}")
 
 	total_rounds = len(stream) * server_cfg.global_rounds
 	log_configuration(

@@ -26,6 +26,15 @@ federated:
   alpha: 1.0  # Dirichlet concentration for client splits
 
 # -------------------------
+# Client Type Selection
+# -------------------------
+# Options: 
+#   - "fedavg_gan": Standard FedAvg with GAN replay (IncrementalNet + conditional GAN)
+#   - "acgan": ACGAN-based client (single model for classification and generation)
+client:
+  type: fedavg_gan
+
+# -------------------------
 # Training Hyperparameters
 # -------------------------
 training:
@@ -70,6 +79,17 @@ gan:
   steps_per_batch: 1
   # Generator produces grayscale 28x28 images (native MNIST)
   # Discriminator sees RGB 224x224 (after transforms)
+
+# -------------------------
+# ACGAN Configuration (only used when client.type=acgan)
+# -------------------------
+acgan:
+  z_dim: 128
+  img_channels: 1  # MNIST is grayscale
+  img_size: 28  # Native MNIST size (ACGAN works on original size)
+  base_channels: 64
+  g_lr: 2e-4
+  d_lr: 2e-4
 
 # -------------------------
 # System & Paths
