@@ -68,62 +68,36 @@ def build_transforms(
 	"""
 	Build train and test transforms for a dataset.
 	
+	For consistency in continual/incremental learning, train and test transforms
+	are identical - no data augmentation is applied. This ensures that the model
+	sees data from the same distribution during training and evaluation.
+	
+	Images are normalized to [-1, 1] range to match GAN generator output (Tanh).
+	
 	Args:
 		spec: Dataset specification containing mean/std normalization values
-		target_img_size: Target image size (e.g., 224 for ResNet)
-		convert_to_rgb: Whether to convert grayscale to RGB (for 1-channel datasets)
+		target_img_size: Target image size (original dataset size, e.g., 28 for MNIST)
+		convert_to_rgb: Whether to convert grayscale to RGB (deprecated, no longer used)
 		
 	Returns:
-		Tuple of (train_transform, test_transform)
+		Tuple of (train_transform, test_transform) - both are identical
 	"""
-	# Build normalization based on output channels
-	if convert_to_rgb and spec.img_channels == 1:
-		# When converting grayscale to RGB, use same stats repeated 3 times
-		# But actually, for pretrained models, use ImageNet-like stats
-		norm_mean = (0.485, 0.456, 0.406)
-		norm_std = (0.229, 0.224, 0.225)
-	else:
-		norm_mean = spec.mean
-		norm_std = spec.std
+	# Build transform pipeline - keep original size, normalize to [-1, 1]
+	transforms_list = []
 	
-	# Base transforms
-	train_transforms_list = [
-		transforms.Resize((target_img_size, target_img_size)),
-	]
-	test_transforms_list = [
-		transforms.Resize((target_img_size, target_img_size)),
-	]
+	# Only resize if target size differs from original
+	if target_img_size != spec.original_img_size:
+		transforms_list.append(transforms.Resize((target_img_size, target_img_size)))
 	
-	# Add grayscale to RGB conversion if needed
-	if convert_to_rgb and spec.img_channels == 1:
-		train_transforms_list.append(transforms.Grayscale(num_output_channels=3))
-		test_transforms_list.append(transforms.Grayscale(num_output_channels=3))
-	
-	# Data augmentation for training (adjust for different datasets)
-	if spec.img_channels == 3 or convert_to_rgb:
-		train_transforms_list.extend([
-			transforms.RandomHorizontalFlip(),
-			transforms.RandomCrop(target_img_size, padding=4),
-		])
-	else:
-		# For grayscale without conversion, simpler augmentation
-		train_transforms_list.extend([
-			transforms.RandomRotation(10),
-			transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-		])
-	
-	# Convert to tensor and normalize
-	train_transforms_list.extend([
+	# Convert to tensor (scales to [0, 1]) and normalize to [-1, 1]
+	transforms_list.extend([
 		transforms.ToTensor(),
-		transforms.Normalize(norm_mean, norm_std),
+		transforms.Normalize(spec.mean, spec.std),
 	])
 	
-	test_transforms_list.extend([
-		transforms.ToTensor(),
-		transforms.Normalize(norm_mean, norm_std),
-	])
-	
-	return transforms.Compose(train_transforms_list), transforms.Compose(test_transforms_list)
+	tf = transforms.Compose(transforms_list)
+	# Return same transform for both train and test
+	return tf, tf
 
 
 def make_gan_sample_transform(
@@ -135,38 +109,25 @@ def make_gan_sample_transform(
 	"""
 	Transform synthetic GAN outputs to match training normalization.
 	
+	GAN generator outputs images in [-1, 1] range (Tanh activation).
+	Training data is also normalized to [-1, 1] with mean=0.5, std=0.5.
+	So no transformation is needed if sizes match.
+	
 	Args:
 		spec: Dataset specification
 		target_img_size: Target image size for the model
 		generator_channels: Number of channels the generator outputs
-		convert_to_rgb: Whether classifier expects RGB input
+		convert_to_rgb: Deprecated, no longer used
 		
 	Returns:
-		Transform function for GAN samples
+		Transform function for GAN samples (identity if sizes match)
 	"""
-	# Determine normalization based on final output format
-	if convert_to_rgb and spec.img_channels == 1:
-		norm_mean = (0.485, 0.456, 0.406)
-		norm_std = (0.229, 0.224, 0.225)
-		final_channels = 3
-	else:
-		norm_mean = spec.mean
-		norm_std = spec.std
-		final_channels = spec.img_channels
-	
-	mean = torch.tensor(norm_mean).view(1, final_channels, 1, 1)
-	std = torch.tensor(norm_std).view(1, final_channels, 1, 1)
-
 	def _transform(x: torch.Tensor) -> torch.Tensor:
-		# Resize to target size
-		x = F.interpolate(x, size=(target_img_size, target_img_size), mode="bilinear", align_corners=False)
-		
-		# Convert grayscale to RGB if needed
-		if convert_to_rgb and generator_channels == 1:
-			x = x.repeat(1, 3, 1, 1)
-		
-		# Normalize
-		return (x - mean.to(x)) / std.to(x)
+		# Only resize if needed
+		if x.shape[-1] != target_img_size or x.shape[-2] != target_img_size:
+			x = F.interpolate(x, size=(target_img_size, target_img_size), mode="bilinear", align_corners=False)
+		# GAN output is already in [-1, 1], same as training data normalization
+		return x
 
 	return _transform
 
@@ -181,7 +142,7 @@ class TaskStream:
 		self,
 		dataset: str,
 		data_root: str,
-		img_size: int,
+		img_size: Optional[int],  # If None, uses original dataset size
 		num_clients: int,
 		alpha: float,
 		batch_size: int,
@@ -190,7 +151,7 @@ class TaskStream:
 		num_workers: int,
 		seed: int,
 		device: torch.device,
-		convert_grayscale_to_rgb: bool = True,
+		convert_grayscale_to_rgb: bool = False,  # Deprecated, kept for backward compatibility
 	) -> None:
 		"""
 		Initialize a task stream for federated class-incremental learning.
@@ -198,7 +159,7 @@ class TaskStream:
 		Args:
 			dataset: Dataset name (e.g., 'mnist', 'cifar10', 'cifar100')
 			data_root: Root directory for dataset storage
-			img_size: Target image size (e.g., 224 for ResNet)
+			img_size: Target image size. If None, uses original dataset size (recommended).
 			num_clients: Number of federated clients
 			alpha: Dirichlet concentration parameter for non-IID splits
 			batch_size: Training batch size
@@ -207,14 +168,15 @@ class TaskStream:
 			num_workers: DataLoader workers
 			seed: Random seed for reproducibility
 			device: Target device
-			convert_grayscale_to_rgb: Whether to convert grayscale datasets to RGB
+			convert_grayscale_to_rgb: Deprecated, no longer used
 		"""
 		self.spec = get_dataset_spec(dataset)
-		self.img_size = img_size
-		self.convert_to_rgb = convert_grayscale_to_rgb and self.spec.img_channels == 1
+		# Use original dataset size if not specified
+		self.img_size = img_size if img_size is not None else self.spec.original_img_size
+		self.convert_to_rgb = False  # No longer convert to RGB
 
 		# Build transforms
-		train_tf, test_tf = build_transforms(self.spec, img_size, self.convert_to_rgb)
+		train_tf, test_tf = build_transforms(self.spec, self.img_size, self.convert_to_rgb)
 		
 		# Load dataset
 		self.train_ds, self.test_ds = self._load_dataset(data_root, train_tf, test_tf)
@@ -304,8 +266,8 @@ class TaskStream:
 	
 	@property
 	def input_channels(self) -> int:
-		"""Number of input channels expected by the model (after any RGB conversion)."""
-		return 3 if self.convert_to_rgb else self.spec.img_channels
+		"""Number of input channels expected by the model."""
+		return self.spec.img_channels
 	
 	@property
 	def generator_channels(self) -> int:
@@ -316,6 +278,11 @@ class TaskStream:
 	def generator_img_size(self) -> int:
 		"""Image size the GAN generator should produce (original dataset size)."""
 		return self.spec.original_img_size
+	
+	@property
+	def dataset_name(self) -> str:
+		"""Name of the dataset."""
+		return self.spec.name
 
 
 # -------------------------

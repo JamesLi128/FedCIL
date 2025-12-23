@@ -58,20 +58,15 @@ class GANReplayConfig:
     gan_lr: float = 2e-4
     gan_weight_decay: float = 0.0005
     gan_steps_per_batch: int = 1
-    img_channels: int = 3  # Generator output channels (matches dataset)
-    num_total_classes: int = 100  # global label space size (e.g., CIFAR-100)
-    generator_img_size: int = 32  # Size of generated images (original dataset size)
-    discriminator_img_channels: int = 3  # Discriminator input channels (may differ if RGB conversion)
-    discriminator_img_size: int = 224  # Size discriminator expects (after transforms)
+    dataset_name: str = "mnist"  # Dataset name for architecture selection
+    num_total_classes: int = 10  # global label space size
 
 
 @dataclass
 class ACGANConfig:
     """Configuration for ACGAN-based client."""
-    z_dim: int = 128
-    img_channels: int = 3  # Image channels (1 for grayscale, 3 for RGB)
-    img_size: int = 32  # Image size for both generator and discriminator
-    base_channels: int = 64  # Base channel count for conv layers
+    z_dim: int = 100
     g_lr: float = 2e-4  # Generator learning rate
     d_lr: float = 2e-4  # Discriminator learning rate
-    num_total_classes: int = 100  # Total classes in dataset
+    dataset_name: str = "mnist"  # Dataset name for architecture selection
+    num_total_classes: int = 10  # Total classes in dataset

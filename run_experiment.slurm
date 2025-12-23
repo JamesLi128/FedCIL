@@ -27,6 +27,7 @@ conda activate ML  # or your environment name
 cd ~/Projects/FCIL/models
 
 export PYTHONUNBUFFERED=1
+export HYDRA_FULL_ERROR=1  # Show full Hydra errors
 
 # =============================================
 # Example 1: Single run with CIFAR-10 defaults

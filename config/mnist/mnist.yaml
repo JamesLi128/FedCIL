@@ -11,11 +11,11 @@ dataset:
   name: mnist
   data_root: /home/hli54/data
   num_classes: 10
-  img_size: 224  # Resize for ResNet18
-  original_img_size: 28  # Original MNIST size (for generator)
+  img_size: 28  # Use original MNIST size (no upscaling)
+  original_img_size: 28  # Original MNIST size
   img_channels: 1  # MNIST is grayscale
   classes_per_task: 2
-  convert_grayscale_to_rgb: true  # Convert to RGB for ResNet compatibility
+  convert_grayscale_to_rgb: false  # No RGB conversion needed with custom conv backbone
 
 # -------------------------
 # Federated Learning Setup
@@ -38,12 +38,11 @@ client:
 # Training Hyperparameters
 # -------------------------
 training:
-  global_rounds: 10
+  global_rounds: 50
   local_epochs: 3
   batch_size: 64
   eval_batch_size: 512
   lr: 1e-3
-  gan_lr: 2e-4
   weight_decay: 0.0001
   gan_weight_decay: 0.0005
   max_grad_norm: null
@@ -53,7 +52,7 @@ training:
 # -------------------------
 model:
   classification_head_type: multilayer  # singlehead or multilayer
-  hidden_dim: 128  # Hidden dimension for multilayer classifier
+  hidden_dim: 256  # Hidden dimension for multilayer classifier
 
 # -------------------------
 # Replay Configuration
@@ -73,21 +72,16 @@ server:
 # GAN Configuration
 # -------------------------
 gan:
-  z_dim: 128
-  lr: 5e-3
+  z_dim: 100
+  lr: 2e-4
   label_embed_dim: 64
   steps_per_batch: 1
-  # Generator produces grayscale 28x28 images (native MNIST)
-  # Discriminator sees RGB 224x224 (after transforms)
 
 # -------------------------
 # ACGAN Configuration (only used when client.type=acgan)
 # -------------------------
 acgan:
-  z_dim: 128
-  img_channels: 1  # MNIST is grayscale
-  img_size: 28  # Native MNIST size (ACGAN works on original size)
-  base_channels: 64
+  z_dim: 100
   g_lr: 2e-4
   d_lr: 2e-4
 
@@ -116,6 +110,6 @@ hydra:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.num}
+    subdir: acgan
   job:
     chdir: false  # Don't change working directory

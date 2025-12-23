@@ -8,6 +8,7 @@ This implementation:
 - Supports multiple image sizes (28x28 MNIST, 32x32 CIFAR, etc.)
 - Has an expandable auxiliary classifier for class-incremental learning
 - Provides both image generation and classification in a single model
+- Uses dataset-aware custom conv backbones (no pretrained ResNet)
 """
 from __future__ import annotations
 
@@ -20,72 +21,144 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# ============================================================================
+# Dataset-specific architecture configurations
+# ============================================================================
+
+@dataclass
+class DatasetArchConfig:
+    """Architecture configuration for a specific dataset."""
+    img_size: int
+    img_channels: int
+    # Generator config
+    gen_start_size: int  # Starting spatial size before upsampling
+    gen_init_channels: int  # Number of channels after FC projection
+    # Discriminator config  
+    disc_feature_size: int  # Spatial size after conv backbone (before flatten)
+    disc_final_channels: int  # Number of channels at final conv layer
+
+
+# Pre-defined configurations for common datasets
+DATASET_ARCH_CONFIGS: Dict[str, DatasetArchConfig] = {
+    "mnist": DatasetArchConfig(
+        img_size=28, img_channels=1,
+        gen_start_size=7, gen_init_channels=256,
+        disc_feature_size=3, disc_final_channels=256
+    ),
+    "fashion_mnist": DatasetArchConfig(
+        img_size=28, img_channels=1,
+        gen_start_size=7, gen_init_channels=256,
+        disc_feature_size=3, disc_final_channels=256
+    ),
+    "emnist": DatasetArchConfig(
+        img_size=28, img_channels=1,
+        gen_start_size=7, gen_init_channels=256,
+        disc_feature_size=3, disc_final_channels=256
+    ),
+    "cifar10": DatasetArchConfig(
+        img_size=32, img_channels=3,
+        gen_start_size=4, gen_init_channels=512,
+        disc_feature_size=4, disc_final_channels=256
+    ),
+    "cifar100": DatasetArchConfig(
+        img_size=32, img_channels=3,
+        gen_start_size=4, gen_init_channels=512,
+        disc_feature_size=4, disc_final_channels=256
+    ),
+}
+
+
+def get_arch_config(dataset_name: str) -> DatasetArchConfig:
+    """Get architecture config for a dataset."""
+    name_lower = dataset_name.lower()
+    if name_lower not in DATASET_ARCH_CONFIGS:
+        raise ValueError(f"Unknown dataset '{dataset_name}'. Available: {list(DATASET_ARCH_CONFIGS.keys())}")
+    return DATASET_ARCH_CONFIGS[name_lower]
+
+
+# ============================================================================
+# Generator
+# ============================================================================
+
 class ACGANGenerator(nn.Module):
     """
-    ACGAN Generator supporting multiple output sizes.
-    Supports 28x28 (MNIST), 32x32 (CIFAR), 64x64, etc.
+    ACGAN Generator with dataset-aware architecture.
+    
+    Architecture is determined by the dataset:
+    - MNIST/Fashion-MNIST/EMNIST (28x28): 7x7 -> 14x14 -> 28x28
+    - CIFAR-10/100 (32x32): 4x4 -> 8x8 -> 16x16 -> 32x32
     
     Uses conditional generation with one-hot label embedding concatenated to noise.
+    Output range is [-1, 1] (using Tanh), matching normalized training data.
     """
     def __init__(
         self,
         z_dim: int,
         num_classes: int,
-        img_channels: int = 3,
-        img_size: int = 32,
-        base_channels: int = 64
+        dataset_name: str = "mnist",
     ):
         super().__init__()
         self.z_dim = z_dim
         self.num_classes = num_classes
-        self.img_channels = img_channels
-        self.img_size = img_size
+        self.dataset_name = dataset_name.lower()
+        
+        # Get dataset-specific architecture config
+        arch = get_arch_config(self.dataset_name)
+        self.img_channels = arch.img_channels
+        self.img_size = arch.img_size
+        self.start_size = arch.gen_start_size
+        self.init_channels = arch.gen_init_channels
         
         # Input: z_dim + num_classes (one-hot label)
         self.input_dim = z_dim + num_classes
         
-        # Determine architecture based on target size
-        # Start from 4x4 and upsample
-        self.start_size = 4
-        num_upsamples = int(math.log2(img_size / self.start_size))
-        if 2 ** num_upsamples * self.start_size != img_size:
-            # Handle non-power-of-2 sizes (e.g., 28)
-            num_upsamples = int(math.ceil(math.log2(img_size / self.start_size)))
-        
-        self.num_upsamples = num_upsamples
-        self.init_channels = base_channels * (2 ** num_upsamples)
-        
-        # Project and reshape
+        # Project and reshape: z+y -> feature map
         self.fc = nn.Sequential(
             nn.Linear(self.input_dim, self.init_channels * self.start_size * self.start_size),
-            nn.BatchNorm1d(self.init_channels * self.start_size * self.start_size),
-            nn.ReLU(True),
+            nn.ReLU(),
         )
         
-        # Build upsampling layers
-        layers = []
-        in_ch = self.init_channels
-        
-        for i in range(num_upsamples):
-            out_ch = in_ch // 2 if i < num_upsamples - 1 else base_channels
-            layers.extend([
-                nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(out_ch),
-                nn.ReLU(True),
-            ])
-            in_ch = out_ch
-        
-        # Final conv to get correct channels
-        layers.extend([
-            nn.Conv2d(base_channels, img_channels, 3, 1, 1),
-            nn.Tanh(),
-        ])
-        
-        self.deconv = nn.Sequential(*layers)
-        
-        # Track actual output size for potential resizing
-        self.actual_output_size = self.start_size * (2 ** num_upsamples)
-        self.needs_resize = (self.actual_output_size != img_size)
+        # Build dataset-specific decoder
+        self.deconv = self._build_decoder(arch)
+    
+    def _build_decoder(self, arch: DatasetArchConfig) -> nn.Sequential:
+        """Build decoder layers based on dataset architecture."""
+        if self.dataset_name in ("mnist", "fashion_mnist", "emnist"):
+            # 28x28 images: 7x7 -> 14x14 -> 28x28
+            return nn.Sequential(
+                # 7x7 -> 14x14
+                nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                # 14x14 -> 28x28
+                nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                # Final conv to get 1 channel
+                nn.Conv2d(64, arch.img_channels, kernel_size=3, stride=1, padding=1),
+                nn.Tanh(),
+            )
+        elif self.dataset_name in ("cifar10", "cifar100"):
+            # 32x32 images: 4x4 -> 8x8 -> 16x16 -> 32x32
+            return nn.Sequential(
+                # 4x4 -> 8x8
+                nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(256),
+                nn.ReLU(),
+                # 8x8 -> 16x16
+                nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                # 16x16 -> 32x32
+                nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                # Final conv to get 3 channels
+                nn.Conv2d(64, arch.img_channels, kernel_size=3, stride=1, padding=1),
+                nn.Tanh(),
+            )
+        else:
+            raise ValueError(f"No decoder defined for dataset: {self.dataset_name}")
     
     def forward(self, z: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
@@ -94,14 +167,12 @@ class ACGANGenerator(nn.Module):
             y: Class labels of shape (batch,) - integer labels
         
         Returns:
-            Generated images in range [0, 1]
+            Generated images in range [-1, 1], shape (batch, C, H, W)
         """
         batch_size = z.size(0)
-        device = z.device
         
         # Create one-hot encoding
-        y_onehot = torch.zeros(batch_size, self.num_classes, device=device)
-        y_onehot.scatter_(1, y.view(-1, 1), 1)
+        y_onehot = F.one_hot(y, num_classes=self.num_classes).float()
         
         # Concatenate noise and label
         z_y = torch.cat([z, y_onehot], dim=1)
@@ -110,16 +181,9 @@ class ACGANGenerator(nn.Module):
         h = self.fc(z_y)
         h = h.view(batch_size, self.init_channels, self.start_size, self.start_size)
         
-        # Upsample
-        x = self.deconv(h)
-        
-        # Resize if needed
-        if self.needs_resize:
-            x = F.interpolate(x, size=(self.img_size, self.img_size), 
-                            mode='bilinear', align_corners=False)
-        
-        # Map from [-1, 1] to [0, 1]
-        return (x + 1.0) / 2.0
+        # Upsample to target size
+        img = self.deconv(h)
+        return img
     
     def expand_classes(self, num_new_classes: int) -> None:
         """Expand the generator to handle more classes."""
@@ -151,105 +215,191 @@ class ACGANGenerator(nn.Module):
         self.input_dim = new_input_dim
 
 
+def _build_frozen_resnet18_backbone(input_channels: int = 3) -> Tuple[nn.Module, int]:
+    """
+    Build a frozen pretrained ResNet18 backbone for the discriminator.
+    
+    Args:
+        input_channels: Number of input channels (should be 3 for pretrained weights)
+    
+    Returns:
+        Tuple of (backbone module, feature dimension)
+    """
+    try:
+        from torchvision.models import resnet18, ResNet18_Weights
+        backbone = resnet18(weights=ResNet18_Weights.DEFAULT)
+    except Exception:
+        from torchvision.models import resnet18
+        backbone = resnet18(pretrained=True)
+    
+    feat_dim = backbone.fc.in_features  # 512 for ResNet18
+    backbone.fc = nn.Identity()  # Remove final classification layer
+    
+    # Modify first conv layer if input channels != 3
+    if input_channels != 3:
+        old_conv = backbone.conv1
+        backbone.conv1 = nn.Conv2d(
+            input_channels, old_conv.out_channels,
+            kernel_size=old_conv.kernel_size,
+            stride=old_conv.stride,
+            padding=old_conv.padding,
+            bias=old_conv.bias is not None
+        )
+        with torch.no_grad():
+            if input_channels == 1:
+                # Average RGB weights for grayscale
+                backbone.conv1.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
+            else:
+                nn.init.kaiming_normal_(backbone.conv1.weight, mode='fan_out', nonlinearity='relu')
+    
+    # Freeze all backbone parameters
+    for p in backbone.parameters():
+        p.requires_grad = False
+    
+    return backbone, feat_dim
+
+
 class ACGANDiscriminator(nn.Module):
     """
-    ACGAN Discriminator with expandable auxiliary classifier.
+    ACGAN Discriminator with dataset-aware custom conv backbone.
     
-    Outputs:
-        - real/fake logit
-        - class logits (auxiliary classifier)
+    Architecture is determined by the dataset:
+    - MNIST/Fashion-MNIST/EMNIST (28x28): 28x28 -> 14x14 -> 7x7 -> 3x3
+    - CIFAR-10/100 (32x32): 32x32 -> 16x16 -> 8x8 -> 4x4
+    
+    All parameters are trainable (no frozen pretrained backbone).
+    Has two heads:
+        - fc_dis: Real/fake discrimination head
+        - fc_aux: Auxiliary classification head (expandable for incremental learning)
     """
     def __init__(
         self,
         num_classes: int,
-        img_channels: int = 3,
-        img_size: int = 32,
-        base_channels: int = 64
+        dataset_name: str = "mnist",
+        embed_dim: int = 32,
     ):
         super().__init__()
         self.num_classes = num_classes
-        self.img_channels = img_channels
-        self.img_size = img_size
-        self.base_channels = base_channels
+        self.dataset_name = dataset_name.lower()
+        self.embed_dim = embed_dim
         
-        # Calculate number of downsampling layers needed
-        # We downsample until we reach 4x4
-        num_downsamples = int(math.log2(img_size / 4))
-        if num_downsamples < 1:
-            num_downsamples = 1
+        # Get dataset-specific architecture config
+        arch = get_arch_config(self.dataset_name)
+        self.img_channels = arch.img_channels
+        self.img_size = arch.img_size
         
-        # Build conv layers
-        layers = []
-        in_ch = img_channels
-        out_ch = base_channels
+        # Embedding for class labels (for conditional discrimination)
+        self.embed = nn.Embedding(num_classes, embed_dim)
         
-        # First layer (no batchnorm)
-        layers.extend([
-            nn.Conv2d(in_ch, out_ch, 4, 2, 1, bias=False),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.25),
-        ])
-        in_ch = out_ch
+        # Build dataset-specific conv backbone
+        self.backbone = self._build_backbone(arch)
         
-        # Subsequent layers
-        for i in range(num_downsamples - 1):
-            out_ch = min(in_ch * 2, base_channels * 8)
-            layers.extend([
-                nn.Conv2d(in_ch, out_ch, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(out_ch),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Dropout2d(0.25),
-            ])
-            in_ch = out_ch
+        # Calculate feature size after backbone
+        self.feature_size = arch.disc_final_channels * arch.disc_feature_size * arch.disc_feature_size
         
-        self.conv = nn.Sequential(*layers)
-        
-        # Calculate feature size after conv
-        # After num_downsamples, size is img_size / 2^num_downsamples
-        final_size = max(img_size // (2 ** num_downsamples), 1)
-        self.feature_size = in_ch * final_size * final_size
-        
-        # Discriminator head (real/fake)
-        self.fc_dis = nn.Linear(self.feature_size, 1)
+        # Discriminator head (real/fake) - with label conditioning
+        self.fc_dis = nn.Linear(self.feature_size + embed_dim, 1)
         
         # Auxiliary classifier head (class prediction)
         self.fc_aux = nn.Linear(self.feature_size, num_classes)
     
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _build_backbone(self, arch: DatasetArchConfig) -> nn.Sequential:
+        """Build convolutional backbone based on dataset architecture."""
+        if self.dataset_name in ("mnist", "fashion_mnist", "emnist"):
+            # 28x28 -> 14x14 -> 7x7 -> 3x3 (feature_size=3)
+            return nn.Sequential(
+                # 28x28 -> 14x14
+                nn.Conv2d(arch.img_channels, 64, kernel_size=4, stride=2, padding=1),
+                nn.LeakyReLU(0.2),
+                # 14x14 -> 7x7
+                nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(128),
+                nn.LeakyReLU(0.2),
+                # 7x7 -> 3x3
+                nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(256),
+                nn.LeakyReLU(0.2),
+            )
+        elif self.dataset_name in ("cifar10", "cifar100"):
+            # 32x32 -> 16x16 -> 8x8 -> 4x4 (feature_size=4)
+            return nn.Sequential(
+                # 32x32 -> 16x16
+                nn.Conv2d(arch.img_channels, 64, kernel_size=4, stride=2, padding=1),
+                nn.LeakyReLU(0.2),
+                # 16x16 -> 8x8
+                nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(128),
+                nn.LeakyReLU(0.2),
+                # 8x8 -> 4x4
+                nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(256),
+                nn.LeakyReLU(0.2),
+            )
+        else:
+            raise ValueError(f"No backbone defined for dataset: {self.dataset_name}")
+    
+    def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             x: Input images of shape (batch, channels, height, width)
+            y: Optional class labels for conditional discrimination (batch,)
         
         Returns:
             dis_out: Real/fake logits of shape (batch,)
             aux_out: Class logits of shape (batch, num_classes)
         """
-        h = self.conv(x)
-        h = h.view(h.size(0), -1)
+        # Extract features using conv backbone
+        h = self.backbone(x)
+        h = h.flatten(1)  # (batch, feature_size)
         
-        dis_out = self.fc_dis(h).squeeze(1)
+        # Auxiliary classification
         aux_out = self.fc_aux(h)
+        
+        # Real/fake discrimination with label conditioning
+        if y is not None:
+            y_embed = self.embed(y)
+            h_cond = torch.cat([h, y_embed], dim=1)
+        else:
+            # Use zeros for label embedding if not provided
+            y_embed = torch.zeros(h.size(0), self.embed_dim, device=h.device)
+            h_cond = torch.cat([h, y_embed], dim=1)
+        
+        dis_out = self.fc_dis(h_cond).squeeze(1)
         
         return dis_out, aux_out
     
     def expand_classes(self, num_new_classes: int) -> None:
-        """Expand the auxiliary classifier to handle more classes."""
+        """Expand the auxiliary classifier and embedding to handle more classes."""
         if num_new_classes <= 0:
             return
         
+        old_num_classes = self.num_classes
+        new_num_classes = old_num_classes + num_new_classes
+        
+        # Expand auxiliary classifier head
         old_fc = self.fc_aux
-        new_num_classes = self.num_classes + num_new_classes
         new_fc = nn.Linear(self.feature_size, new_num_classes)
         new_fc = new_fc.to(old_fc.weight.device)
         
         with torch.no_grad():
-            new_fc.weight[:self.num_classes].copy_(old_fc.weight)
-            new_fc.bias[:self.num_classes].copy_(old_fc.bias)
+            new_fc.weight[:old_num_classes].copy_(old_fc.weight)
+            new_fc.bias[:old_num_classes].copy_(old_fc.bias)
             # Initialize new class weights
-            nn.init.xavier_uniform_(new_fc.weight[self.num_classes:])
-            nn.init.zeros_(new_fc.bias[self.num_classes:])
+            nn.init.xavier_uniform_(new_fc.weight[old_num_classes:])
+            nn.init.zeros_(new_fc.bias[old_num_classes:])
         
         self.fc_aux = new_fc
+        
+        # Expand label embedding
+        old_embed = self.embed
+        new_embed = nn.Embedding(new_num_classes, self.embed_dim)
+        new_embed = new_embed.to(old_embed.weight.device)
+        
+        with torch.no_grad():
+            new_embed.weight[:old_num_classes].copy_(old_embed.weight)
+            nn.init.normal_(new_embed.weight[old_num_classes:], 0, 0.02)
+        
+        self.embed = new_embed
         self.num_classes = new_num_classes
     
     def classify(self, x: torch.Tensor) -> torch.Tensor:
@@ -264,42 +414,51 @@ class IncrementalACGAN(nn.Module):
     
     Combines:
     - Generator: Produces synthetic images conditioned on class labels
-    - Discriminator: Distinguishes real/fake AND classifies images
+    - Discriminator: Custom conv backbone for real/fake + classification
     
-    The auxiliary classifier in the discriminator serves as the main
-    classification model, eliminating the need for a separate classifier.
+    Both generator and discriminator use dataset-aware architectures with custom
+    conv backbones trained from scratch. No pretrained ResNet is used.
+    
+    Data is expected to be normalized to [-1, 1] (matching generator output range).
     """
     def __init__(
         self,
         z_dim: int,
         num_classes: int,
-        img_channels: int = 3,
-        img_size: int = 32,
-        base_channels: int = 64,
+        dataset_name: str = "mnist",
         g_lr: float = 2e-4,
         d_lr: float = 2e-4,
     ):
         super().__init__()
         self.z_dim = z_dim
         self.num_classes = num_classes
-        self.img_channels = img_channels
-        self.img_size = img_size
+        self.dataset_name = dataset_name.lower()
         
+        # Get architecture config for backward compatibility
+        arch = get_arch_config(self.dataset_name)
+        self.img_channels = arch.img_channels
+        self.img_size = arch.img_size
+        
+        # For backward compatibility
+        self.generator_img_channels = arch.img_channels
+        self.generator_img_size = arch.img_size
+        self.discriminator_img_channels = arch.img_channels
+        self.discriminator_img_size = arch.img_size
+        
+        # Create generator
         self.G = ACGANGenerator(
             z_dim=z_dim,
             num_classes=num_classes,
-            img_channels=img_channels,
-            img_size=img_size,
-            base_channels=base_channels,
+            dataset_name=dataset_name,
         )
         
+        # Create discriminator
         self.D = ACGANDiscriminator(
             num_classes=num_classes,
-            img_channels=img_channels,
-            img_size=img_size,
-            base_channels=base_channels,
+            dataset_name=dataset_name,
         )
         
+        # Optimizers
         self.g_optimizer = torch.optim.Adam(
             self.G.parameters(), lr=g_lr, betas=(0.5, 0.999)
         )
@@ -325,17 +484,15 @@ class IncrementalACGAN(nn.Module):
         self, 
         x_real: torch.Tensor, 
         y_real: torch.Tensor,
-        train_d: bool = True,
-        train_g: bool = True,
+        n_replay: int = 0,
     ) -> Dict[str, float]:
         """
         Single training step for ACGAN.
         
         Args:
-            x_real: Real images in range [0, 1], shape (batch, C, H, W)
+            x_real: Real images in range [-1, 1], shape (batch, C, H, W)
             y_real: Real labels, shape (batch,)
-            train_d: Whether to update discriminator
-            train_g: Whether to update generator
+            n_replay: Number of replay samples to generate
         
         Returns:
             Dictionary with loss values
@@ -352,54 +509,53 @@ class IncrementalACGAN(nn.Module):
         # ============================
         # Train Discriminator
         # ============================
-        if train_d:
-            self.D.train()
-            self.d_optimizer.zero_grad()
-            
-            # Real images
-            dis_real, aux_real = self.D(x_real)
-            loss_dis_real = self.dis_loss_fn(dis_real, torch.ones_like(dis_real))
-            loss_aux_real = self.aux_loss_fn(aux_real, y_real)
-            
-            # Generate fake images
-            z = torch.randn(batch_size, self.z_dim, device=device)
-            x_fake = self.G(z, y_real).detach()
-            
-            # Fake images
-            dis_fake, aux_fake = self.D(x_fake)
-            loss_dis_fake = self.dis_loss_fn(dis_fake, torch.zeros_like(dis_fake))
-            loss_aux_fake = self.aux_loss_fn(aux_fake, y_real)
-            
-            # Total D loss
-            loss_d = loss_dis_real + loss_dis_fake + loss_aux_real + loss_aux_fake
-            loss_d.backward()
-            self.d_optimizer.step()
-            
-            metrics["loss_d"] = loss_d.item()
-            metrics["loss_aux"] = (loss_aux_real.item() + loss_aux_fake.item()) / 2
+        self.D.train()
+        self.d_optimizer.zero_grad()
+        
+        # Real images
+        dis_real, aux_real = self.D(x_real, y_real)
+        loss_dis_real = self.dis_loss_fn(dis_real, torch.ones_like(dis_real))
+        loss_aux_real = self.aux_loss_fn(aux_real, y_real)
+
+        # Generate fake images
+        x_fake_raw, y_fake = self.sample(n=batch_size + n_replay)
+    
+        # Fake images (detach to not update generator)
+        dis_fake, aux_fake = self.D(x_fake_raw.detach(), y_fake)
+        loss_dis_fake = self.dis_loss_fn(dis_fake, torch.zeros_like(dis_fake))
+        loss_aux_fake = self.aux_loss_fn(aux_fake, y_fake)
+    
+        # Total D loss
+        loss_d = loss_dis_real + loss_dis_fake + loss_aux_real + loss_aux_fake
+
+        loss_d.backward()
+        self.d_optimizer.step()
+        
+        metrics["loss_d"] = loss_d.item()
+        metrics["loss_aux"] = (loss_aux_real.item() + loss_aux_fake.item())
         
         # ============================
         # Train Generator
         # ============================
-        if train_g:
-            self.G.train()
-            self.g_optimizer.zero_grad()
-            
-            # Generate fake images
-            z = torch.randn(batch_size, self.z_dim, device=device)
-            x_fake = self.G(z, y_real)
-            
-            # Generator wants discriminator to think fakes are real
-            dis_fake, aux_fake = self.D(x_fake)
-            loss_dis_g = self.dis_loss_fn(dis_fake, torch.ones_like(dis_fake))
-            loss_aux_g = self.aux_loss_fn(aux_fake, y_real)
-            
-            loss_g = loss_dis_g + loss_aux_g
-            loss_g.backward()
-            self.g_optimizer.step()
-            
-            metrics["loss_g"] = loss_g.item()
+        self.G.train()
+        self.g_optimizer.zero_grad()
         
+        # Generate fake images
+        z = torch.randn(batch_size + n_replay, self.z_dim, device=device)
+        y_gen = torch.cat([y_real, torch.randint(0, self.num_classes, (n_replay,), device=device)], dim=0)
+        x_fake = self.G(z, y_gen)
+        
+        # Generator wants discriminator to think fakes are real
+        dis_fake, aux_fake = self.D(x_fake, y_gen)
+        loss_dis_g = self.dis_loss_fn(dis_fake, torch.ones_like(dis_fake))
+        loss_aux_g = self.aux_loss_fn(aux_fake, y_gen)
+        
+        loss_g = loss_dis_g + loss_aux_g
+        loss_g.backward()
+        self.g_optimizer.step()
+        
+        metrics["loss_g"] = loss_g.item()
+    
         return metrics
     
     @torch.no_grad()
@@ -412,7 +568,7 @@ class IncrementalACGAN(nn.Module):
             labels: Optional labels to generate. If None, samples uniformly.
         
         Returns:
-            x_fake: Generated images in range [0, 1]
+            x_fake: Generated images in range [-1, 1]
             y_fake: Labels used for generation
         """
         self.G.eval()

@@ -231,6 +231,7 @@ def main(cfg: DictConfig) -> None:
 	
 	if client_type == "acgan":
 		# ACGAN-based client: single model for classification and generation
+		# Uses dataset-aware custom conv backbones (no pretrained ResNet)
 		acgan_cfg = cfg.get("acgan", {})
 		algo = FedAvgWithACGAN(
 			num_clients=cfg.federated.num_clients,
@@ -239,14 +240,11 @@ def main(cfg: DictConfig) -> None:
 			client_cfg=client_cfg,
 			server_cfg=server_cfg,
 			device=device,
-			sample_transform=gan_sample_transform,
 			# ACGAN-specific configuration
-			z_dim=acgan_cfg.get("z_dim", 128),
-			img_channels=acgan_cfg.get("img_channels", stream.generator_channels),
-			img_size=acgan_cfg.get("img_size", stream.generator_img_size),
-			base_channels=acgan_cfg.get("base_channels", 64),
-			g_lr=acgan_cfg.get("g_lr", cfg.training.gan_lr),
-			d_lr=acgan_cfg.get("d_lr", cfg.training.gan_lr),
+			z_dim=acgan_cfg.get("z_dim", 100),
+			dataset_name=cfg.dataset.name,
+			g_lr=acgan_cfg.get("g_lr", cfg.training.get("gan_lr", 2e-4)),
+			d_lr=acgan_cfg.get("d_lr", cfg.training.get("gan_lr", 2e-4)),
 		)
 	elif client_type == "fedavg_gan":
 		# Default: FedAvg with GAN replay (IncrementalNet + conditional GAN)
@@ -261,8 +259,8 @@ def main(cfg: DictConfig) -> None:
 			# Pass dataset-specific info for dynamic model/GAN configuration
 			generator_img_channels=stream.generator_channels,
 			generator_img_size=stream.generator_img_size,
-			discriminator_img_channels=stream.input_channels,  # After RGB conversion if any
-			discriminator_img_size=cfg.dataset.img_size,  # Target size for ResNet
+			# discriminator_img_channels=stream.input_channels,  # After RGB conversion if any
+			# discriminator_img_size=cfg.dataset.img_size,  # Target size for ResNet
 			model_input_channels=stream.input_channels,
 		)
 	else:
@@ -382,22 +380,28 @@ def main(cfg: DictConfig) -> None:
 		)
 		global_step += 1
 		
-		# Generate sample images at the end of each task
-		if (round_idx + 1) == server_cfg.global_rounds:
-			log.info(f"Generating sample images for task {task.task_id}...")
-			task_samples_dir = samples_base_dir / f"task_{task.task_id}"
-			task_samples_dir.mkdir(parents=True, exist_ok=True)
-			
-			generate_and_save_samples(
-				generator=algo.server.replay.G,
-				known_classes=list(seen_classes),  # Copy to avoid mutation issues
-				output_dir=task_samples_dir,
-				num_samples_per_class=4,
-				z_dim=z_dim,
-				device=device,
-				filename=f"task_{task.task_id}_samples.png",
-			)
-			log.info(f"Sample images saved to {task_samples_dir}")
+		# Generate sample images at the end of each global round
+		log.info(f"Generating sample images for task {task.task_id} at global round {round_idx + 1}...")
+		task_samples_dir = samples_base_dir / f"task_{task.task_id}"
+		task_samples_dir.mkdir(parents=True, exist_ok=True)
+		
+		if client_type == "acgan":
+			global_generator = algo.server.model.G
+		elif client_type == "fedavg_gan":
+			global_generator = algo.server.replay.G
+		else:
+			raise ValueError(f"Unknown client type at sample generation: {client_type}")
+
+		generate_and_save_samples(
+			generator=global_generator,
+			known_classes=list(seen_classes),  # Copy to avoid mutation issues
+			output_dir=task_samples_dir,
+			num_samples_per_class=4,
+			z_dim=z_dim,
+			device=device,
+			filename=f"task_{task.task_id}_global_round_{round_idx + 1}_samples.png",
+		)
+		log.info(f"Sample images saved to {task_samples_dir}")
 
 	algo.run_concurrent(
 		stream=stream,

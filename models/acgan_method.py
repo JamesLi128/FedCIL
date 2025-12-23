@@ -32,14 +32,14 @@ class ACGANReplayStrategy(ReplayStrategy):
     Replay strategy that wraps an IncrementalACGAN for generating synthetic samples.
     
     This allows the ACGAN to be used with the existing replay infrastructure.
+    Since the ACGAN now uses dataset-aware architectures with no resizing needed,
+    no sample transform is required.
     """
     def __init__(
         self,
         acgan: IncrementalACGAN,
-        sample_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ):
         self.acgan = acgan
-        self._sample_transform = sample_transform
         self._known_classes: List[int] = []
     
     def set_known_classes(self, known: List[int]) -> None:
@@ -64,10 +64,7 @@ class ACGANReplayStrategy(ReplayStrategy):
             labels = torch.tensor(self._known_classes, device=device, dtype=torch.long)[idx]
         
         x, y = self.acgan.sample(n, labels)
-        
-        if self._sample_transform is not None:
-            x = self._sample_transform(x)
-        
+        # Generator output is already in [-1, 1], matching training data format
         return x, y
 
 
@@ -79,6 +76,7 @@ class ACGANClient(BaseClient):
     - Uses ACGAN's discriminator for classification (no separate IncrementalNet)
     - Single model handles both tasks, simplifying the architecture
     - Generator and discriminator are jointly trained with auxiliary classification loss
+    - Uses dataset-aware custom conv backbones (no pretrained ResNet)
     
     The model attribute is an IncrementalACGAN instead of IncrementalNet.
     """
@@ -88,7 +86,6 @@ class ACGANClient(BaseClient):
         device: torch.device,
         model: IncrementalACGAN,  # Note: model is now IncrementalACGAN
         cfg: ClientConfig,
-        sample_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ) -> None:
         # We don't call super().__init__ because model type is different
         self.client_id = client_id
@@ -96,10 +93,9 @@ class ACGANClient(BaseClient):
         self.model = model.to(device)
         self.cfg = cfg
         self.known_classes: List[int] = []
-        self._sample_transform = sample_transform
         
         # Create replay wrapper for consistency with other code
-        self.replay = ACGANReplayStrategy(model, sample_transform)
+        self.replay = ACGANReplayStrategy(model)
     
     def set_known_classes(self, known: List[int]) -> None:
         self.known_classes = list(known)
@@ -150,17 +146,11 @@ class ACGANClient(BaseClient):
                 # Mix in replay samples for rehearsal
                 if self.known_classes and self.cfg.replay_ratio > 0:
                     n_rep = int(bsz * self.cfg.replay_ratio)
-                    if n_rep > 0:
-                        x_rep, y_rep = self.replay.sample(n_rep, self.device)
-                        x_mix = torch.cat([x, x_rep], dim=0)
-                        y_mix = torch.cat([y, y_rep], dim=0)
-                    else:
-                        x_mix, y_mix = x, y
                 else:
-                    x_mix, y_mix = x, y
+                    n_rep = 0
                 
                 # Train ACGAN
-                step_metrics = self.model.train_step(x_mix, y_mix)
+                step_metrics = self.model.train_step(x, y, n_replay=n_rep)
                 
                 metrics["loss_d"] += step_metrics.get("loss_d", 0.0)
                 metrics["loss_g"] += step_metrics.get("loss_g", 0.0)
@@ -281,10 +271,12 @@ class ACGANServer(BaseServer):
             return
         
         self.model.D.train()
+        # Optimize all discriminator parameters (no frozen backbone anymore)
         opt = torch.optim.Adam(self.model.D.parameters(), lr=self.cfg.server_opt_lr)
         
         for _ in range(self.cfg.server_opt_steps):
             x_syn, y_syn = self.model.sample(self.cfg.server_replay_batch)
+            # No transform needed - generator output is already in correct format
             _, logits = self.model.D(x_syn)
             loss = F.cross_entropy(logits, y_syn)
             opt.zero_grad(set_to_none=True)
@@ -298,6 +290,8 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
     
     This algorithm:
     - Uses ACGAN for both classification and replay generation
+    - Both generator and discriminator use dataset-aware custom conv backbones
+    - Works directly with original dataset size (e.g., 28x28 for MNIST, 32x32 for CIFAR)
     - Expands the ACGAN when new classes arrive
     - Aggregates both generator and discriminator across clients
     """
@@ -309,12 +303,9 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
         client_cfg: ClientConfig,
         server_cfg: ServerConfig,
         device: torch.device,
-        sample_transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         # ACGAN-specific configuration
-        z_dim: int = 128,
-        img_channels: int = 3,
-        img_size: int = 32,
-        base_channels: int = 64,
+        z_dim: int = 100,
+        dataset_name: str = "mnist",
         g_lr: float = 2e-4,
         d_lr: float = 2e-4,
     ) -> None:
@@ -322,9 +313,7 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
         model = IncrementalACGAN(
             z_dim=z_dim,
             num_classes=num_init_classes,
-            img_channels=img_channels,
-            img_size=img_size,
-            base_channels=base_channels,
+            dataset_name=dataset_name,
             g_lr=g_lr,
             d_lr=d_lr,
         )
@@ -348,7 +337,6 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
                 device=device,
                 model=c_model,
                 cfg=client_cfg,
-                sample_transform=sample_transform,
             )
         
         # Initialize base class
@@ -383,9 +371,7 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
         stream,
         round_hook: Optional[Callable] = None,
     ) -> None:
-        """Run federated training."""
-        from fed_base import aggregate_client_metrics
-        
+        """Run federated training."""        
         for task, per_client_loaders in stream:
             self._on_new_task(task)
             

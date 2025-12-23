@@ -65,11 +65,11 @@ MNIST_SPEC = DatasetSpec(
     num_classes=10,
     original_img_size=28,
     img_channels=1,
-    mean=(0.1307,),
-    std=(0.3081,),
+    mean=(0.5,),  # Normalize to [0, 1] range then center
+    std=(0.5,),
     dataset_cls=datasets.MNIST,
     default_classes_per_task=2,
-    requires_grayscale_to_rgb=True,  # Convert to RGB for ResNet compatibility
+    requires_grayscale_to_rgb=False,  # Using custom conv backbone, no RGB conversion needed
 )
 
 FASHION_MNIST_SPEC = DatasetSpec(
@@ -77,11 +77,11 @@ FASHION_MNIST_SPEC = DatasetSpec(
     num_classes=10,
     original_img_size=28,
     img_channels=1,
-    mean=(0.2860,),
-    std=(0.3530,),
+    mean=(0.5,),  # Normalize to [0, 1] range then center
+    std=(0.5,),
     dataset_cls=datasets.FashionMNIST,
     default_classes_per_task=2,
-    requires_grayscale_to_rgb=True,
+    requires_grayscale_to_rgb=False,  # Using custom conv backbone, no RGB conversion needed
 )
 
 EMNIST_SPEC = DatasetSpec(
@@ -89,11 +89,11 @@ EMNIST_SPEC = DatasetSpec(
     num_classes=47,  # Using 'balanced' split
     original_img_size=28,
     img_channels=1,
-    mean=(0.1751,),
-    std=(0.3332,),
+    mean=(0.5,),  # Normalize to [0, 1] range then center
+    std=(0.5,),
     dataset_cls=datasets.EMNIST,
     default_classes_per_task=5,
-    requires_grayscale_to_rgb=True,
+    requires_grayscale_to_rgb=False,  # Using custom conv backbone, no RGB conversion needed
 )
 
 
