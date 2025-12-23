@@ -531,7 +531,7 @@ class IncrementalACGAN(nn.Module):
         loss_d.backward()
         self.d_optimizer.step()
         
-        metrics["loss_d"] = loss_d.item()
+        metrics["loss_d"] = loss_dis_real.item() + loss_dis_fake.item()
         metrics["loss_aux"] = (loss_aux_real.item() + loss_aux_fake.item())
         
         # ============================
