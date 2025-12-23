@@ -32,7 +32,7 @@ federated:
 #   - "fedavg_gan": Standard FedAvg with GAN replay (IncrementalNet + conditional GAN)
 #   - "acgan": ACGAN-based client (single model for classification and generation)
 client:
-  type: fedavg_gan
+  type: acgan
 
 # -------------------------
 # Training Hyperparameters
@@ -65,7 +65,7 @@ replay:
 # Server Optimization
 # -------------------------
 server:
-  opt_steps: 3  # Server-side optimization steps
+  opt_steps: 0  # Server-side optimization steps
   opt_lr: 1e-4
   replay_batch: 128  # Synthetic batch size for server steps
 
