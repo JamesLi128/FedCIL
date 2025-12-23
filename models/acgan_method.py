@@ -115,7 +115,7 @@ class ACGANClient(BaseClient):
             dis_state = {k: v.to(self.device) for k, v in payload.global_dis_state.items()}
             self.model.load_discriminator_state_dict(dis_state)
     
-    def fit_one_task(self, task: TaskInfo, train_loader) -> 'ACGANClientUpdate':
+    def fit_one_task(self, task: TaskInfo, train_loader, prev_global_model: Optional[IncrementalACGAN] = None) -> ACGANClientUpdate:
         """
         Train ACGAN on local data for one task.
         
@@ -151,6 +151,10 @@ class ACGANClient(BaseClient):
                 
                 # Train ACGAN
                 step_metrics = self.model.train_step(x, y, n_replay=n_rep)
+
+                # Distillation from previous global model if provided
+                if prev_global_model is not None:
+                    self.model.KL_distill_from(prev_global_model, x, y)
                 
                 metrics["loss_d"] += step_metrics.get("loss_d", 0.0)
                 metrics["loss_g"] += step_metrics.get("loss_g", 0.0)
@@ -227,6 +231,11 @@ class ACGANServer(BaseServer):
         self.cfg = cfg
         self.known_classes: List[int] = []
         self._round: int = 0
+
+        # Store previous model state for distillation
+        # self.prev_model = None
+        # Store previous known classes
+        # self.prev_known_classes: List[int] = []
         
         # Replay wrapper for server-side optimization
         self.replay = ACGANReplayStrategy(model)
@@ -259,7 +268,7 @@ class ACGANServer(BaseServer):
         new_dis = fedavg(dis_states)
         new_dis = {k: v.to(self.device) for k, v in new_dis.items()}
         self.model.load_discriminator_state_dict(new_dis)
-    
+        
     def server_optimize_step(self) -> None:
         """
         Optional server-side optimization using synthetic samples.
@@ -371,7 +380,8 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
         stream,
         round_hook: Optional[Callable] = None,
     ) -> None:
-        """Run federated training."""        
+        """Run federated training."""
+        prev_global_model = None
         for task, per_client_loaders in stream:
             self._on_new_task(task)
             
@@ -385,11 +395,13 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
                 for cid in chosen:
                     c = self.clients[cid]
                     c.load_server_payload(payload)
-                    upd = c.fit_one_task(task, per_client_loaders[cid])
+                    upd = c.fit_one_task(task, per_client_loaders[cid], prev_global_model=self.prev_global_model)
                     updates.append(upd)
                 
                 self.server.aggregate(updates)
                 self.server.server_optimize_step()
+
+                self.prev_global_model = deepcopy(self.server.model)
                 
                 if round_hook is not None:
                     # Convert to standard ClientUpdate for metrics

@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:A100.80gb:1
+#SBATCH --gres=gpu:A100.40gb:1
 #SBATCH --time=3-00:00:00
 
 # Load modules (adjust based on your cluster)
@@ -75,7 +75,7 @@ export HYDRA_FULL_ERROR=1  # Show full Hydra errors
 #     python run.py --config-path=../config/cifar10 --config-name=$config
 # done
 
-python run.py --config-path=/home/hli54/Projects/FCIL/config/mnist --config-name=mnist -m
+python run.py --config-path=/home/hli54/Projects/FCIL/config/mnist --config-name=mnist
 
 # python run.py --config-path=/home/hli54/Projects/FCIL/config/cifar10 --config-name=nc5cpr3 -m
 

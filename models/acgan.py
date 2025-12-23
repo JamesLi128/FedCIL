@@ -276,20 +276,15 @@ class ACGANDiscriminator(nn.Module):
         self,
         num_classes: int,
         dataset_name: str = "mnist",
-        embed_dim: int = 32,
     ):
         super().__init__()
         self.num_classes = num_classes
         self.dataset_name = dataset_name.lower()
-        self.embed_dim = embed_dim
         
         # Get dataset-specific architecture config
         arch = get_arch_config(self.dataset_name)
         self.img_channels = arch.img_channels
         self.img_size = arch.img_size
-        
-        # Embedding for class labels (for conditional discrimination)
-        self.embed = nn.Embedding(num_classes, embed_dim)
         
         # Build dataset-specific conv backbone
         self.backbone = self._build_backbone(arch)
@@ -298,7 +293,7 @@ class ACGANDiscriminator(nn.Module):
         self.feature_size = arch.disc_final_channels * arch.disc_feature_size * arch.disc_feature_size
         
         # Discriminator head (real/fake) - with label conditioning
-        self.fc_dis = nn.Linear(self.feature_size + embed_dim, 1)
+        self.fc_dis = nn.Linear(self.feature_size, 1)
         
         # Auxiliary classifier head (class prediction)
         self.fc_aux = nn.Linear(self.feature_size, num_classes)
@@ -338,7 +333,7 @@ class ACGANDiscriminator(nn.Module):
         else:
             raise ValueError(f"No backbone defined for dataset: {self.dataset_name}")
     
-    def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             x: Input images of shape (batch, channels, height, width)
@@ -354,17 +349,8 @@ class ACGANDiscriminator(nn.Module):
         
         # Auxiliary classification
         aux_out = self.fc_aux(h)
-        
-        # Real/fake discrimination with label conditioning
-        if y is not None:
-            y_embed = self.embed(y)
-            h_cond = torch.cat([h, y_embed], dim=1)
-        else:
-            # Use zeros for label embedding if not provided
-            y_embed = torch.zeros(h.size(0), self.embed_dim, device=h.device)
-            h_cond = torch.cat([h, y_embed], dim=1)
-        
-        dis_out = self.fc_dis(h_cond).squeeze(1)
+        # Discriminator output
+        dis_out = self.fc_dis(h).squeeze(1)
         
         return dis_out, aux_out
     
@@ -480,6 +466,36 @@ class IncrementalACGAN(nn.Module):
         _, logits = self.D(x)
         return logits
     
+    def train_D_loss(self, x_real: torch.Tensor, y_real: torch.Tensor, x_fake: torch.Tensor, y_fake: torch.Tensor) -> torch.Tensor:
+        """Compute discriminator loss with gradient for a batch."""
+        
+        # Real images
+        dis_real, aux_real = self.D(x_real)
+        loss_dis_real = self.dis_loss_fn(dis_real, torch.ones_like(dis_real))
+        loss_aux_real = self.aux_loss_fn(aux_real, y_real)
+
+        # Fake images
+        dis_fake, aux_fake = self.D(x_fake)
+        loss_dis_fake = self.dis_loss_fn(dis_fake, torch.zeros_like(dis_fake))
+        loss_aux_fake = self.aux_loss_fn(aux_fake, y_fake)
+
+        # Total D loss
+        loss_d = loss_dis_real + loss_dis_fake + loss_aux_real + loss_aux_fake
+        loss_d_log = loss_dis_real.item() + loss_dis_fake.item()
+        loss_aux_log = loss_aux_real.item() + loss_aux_fake.item()
+        return loss_d, loss_d_log, loss_aux_log
+    
+    def train_G_loss(self, x_fake: torch.Tensor, y_fake: torch.Tensor) -> torch.Tensor:
+        """Compute generator loss with gradient for a batch."""
+        
+        # Generator wants discriminator to think fakes are real
+        dis_fake, aux_fake = self.D(x_fake)
+        loss_dis_g = self.dis_loss_fn(dis_fake, torch.ones_like(dis_fake))
+        loss_aux_g = self.aux_loss_fn(aux_fake, y_fake)
+        
+        loss_g = loss_dis_g + loss_aux_g
+        return loss_g
+    
     def train_step(
         self, 
         x_real: torch.Tensor, 
@@ -511,28 +527,17 @@ class IncrementalACGAN(nn.Module):
         # ============================
         self.D.train()
         self.d_optimizer.zero_grad()
-        
-        # Real images
-        dis_real, aux_real = self.D(x_real, y_real)
-        loss_dis_real = self.dis_loss_fn(dis_real, torch.ones_like(dis_real))
-        loss_aux_real = self.aux_loss_fn(aux_real, y_real)
 
         # Generate fake images
         x_fake_raw, y_fake = self.sample(n=batch_size + n_replay)
-    
-        # Fake images (detach to not update generator)
-        dis_fake, aux_fake = self.D(x_fake_raw.detach(), y_fake)
-        loss_dis_fake = self.dis_loss_fn(dis_fake, torch.zeros_like(dis_fake))
-        loss_aux_fake = self.aux_loss_fn(aux_fake, y_fake)
-    
-        # Total D loss
-        loss_d = loss_dis_real + loss_dis_fake + loss_aux_real + loss_aux_fake
+        x_fake = x_fake_raw.detach()  # Detach to avoid gradients to G
 
+        loss_d, loss_d_log, loss_aux_log = self.train_D_loss(x_real, y_real, x_fake, y_fake)
         loss_d.backward()
         self.d_optimizer.step()
         
-        metrics["loss_d"] = loss_dis_real.item() + loss_dis_fake.item()
-        metrics["loss_aux"] = (loss_aux_real.item() + loss_aux_fake.item())
+        metrics["loss_d"] = loss_d_log
+        metrics["loss_aux"] = loss_aux_log
         
         # ============================
         # Train Generator
@@ -545,12 +550,7 @@ class IncrementalACGAN(nn.Module):
         y_gen = torch.cat([y_real, torch.randint(0, self.num_classes, (n_replay,), device=device)], dim=0)
         x_fake = self.G(z, y_gen)
         
-        # Generator wants discriminator to think fakes are real
-        dis_fake, aux_fake = self.D(x_fake, y_gen)
-        loss_dis_g = self.dis_loss_fn(dis_fake, torch.ones_like(dis_fake))
-        loss_aux_g = self.aux_loss_fn(aux_fake, y_gen)
-        
-        loss_g = loss_dis_g + loss_aux_g
+        loss_g = self.train_G_loss(x_fake, y_gen)
         loss_g.backward()
         self.g_optimizer.step()
         
@@ -558,6 +558,37 @@ class IncrementalACGAN(nn.Module):
     
         return metrics
     
+    def KL_distill_from(self, prev_model: IncrementalACGAN, x: torch.Tensor, y: torch.Tensor) -> None:
+        """
+        Distill knowledge from previous model using generated samples.
+        
+        Args:
+            prev_model: Previous IncrementalACGAN model
+            x: Input images for distillation
+            y: True labels for input images
+        """
+        self.D.train()
+        self.d_optimizer.zero_grad()
+        
+        # Get previous model's predictions
+        with torch.no_grad():
+            prev_dis_logits, prev_aux_logits = prev_model.D(x)
+            prev_dis_probs, prev_aux_probs = torch.sigmoid(prev_dis_logits), F.softmax(prev_aux_logits, dim=1)
+            
+        
+        # Current model's predictions
+        curr_dis_logits, curr_aux_logits = self.D(x)
+        curr_dis_probs, curr_aux_probs = torch.sigmoid(curr_dis_logits), F.softmax(curr_aux_logits, dim=1)
+
+        # Use KL divergence for distillation
+        dis_loss = F.kl_div(curr_dis_probs.log(), prev_dis_probs, reduction='batchmean')
+        aux_loss = F.kl_div(curr_aux_probs.log(), prev_aux_probs, reduction='batchmean')
+
+        loss_distill = dis_loss + aux_loss
+        loss_distill.backward()
+        self.d_optimizer.step()
+
+
     @torch.no_grad()
     def sample(self, n: int, labels: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
