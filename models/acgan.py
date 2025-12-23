@@ -88,7 +88,6 @@ class ACGANGenerator(nn.Module):
     - MNIST/Fashion-MNIST/EMNIST (28x28): 7x7 -> 14x14 -> 28x28
     - CIFAR-10/100 (32x32): 4x4 -> 8x8 -> 16x16 -> 32x32
     
-    Uses conditional generation with one-hot label embedding concatenated to noise.
     Output range is [-1, 1] (using Tanh), matching normalized training data.
     """
     def __init__(
@@ -355,7 +354,6 @@ class ACGANDiscriminator(nn.Module):
         return dis_out, aux_out
     
     def expand_classes(self, num_new_classes: int) -> None:
-        """Expand the auxiliary classifier and embedding to handle more classes."""
         if num_new_classes <= 0:
             return
         
@@ -376,16 +374,6 @@ class ACGANDiscriminator(nn.Module):
         
         self.fc_aux = new_fc
         
-        # Expand label embedding
-        old_embed = self.embed
-        new_embed = nn.Embedding(new_num_classes, self.embed_dim)
-        new_embed = new_embed.to(old_embed.weight.device)
-        
-        with torch.no_grad():
-            new_embed.weight[:old_num_classes].copy_(old_embed.weight)
-            nn.init.normal_(new_embed.weight[old_num_classes:], 0, 0.02)
-        
-        self.embed = new_embed
         self.num_classes = new_num_classes
     
     def classify(self, x: torch.Tensor) -> torch.Tensor:
