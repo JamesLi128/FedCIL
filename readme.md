@@ -16,6 +16,8 @@
     4. backward transfer and forward transfer
     5. for each known class, generate 4 images and put them in one big image with 1 row and 4 columns, each image takes a column place, put them in a folder under each hydra sweep configuration folder
 
+- Use prev local model to replay D. Now d_loss = d_loss_real + d_loss_fake + d_loss_replay
+
 
 - Understand how FedGTEA worked and plot a roadmap
 - Code the initial version of FedGTEA

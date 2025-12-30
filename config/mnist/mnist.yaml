@@ -42,7 +42,7 @@ training:
   local_epochs: 3
   batch_size: 64
   eval_batch_size: 512
-  lr: 1e-3
+  lr: 1e-4
   weight_decay: 0.0001
   gan_weight_decay: 0.0005
   max_grad_norm: null
@@ -82,8 +82,8 @@ gan:
 # -------------------------
 acgan:
   z_dim: 128
-  g_lr: 1e-3
-  d_lr: 1e-3  # For sweep, use CLI: -m acgan.d_lr=0.0005,0.0007,0.001
+  g_lr: 1e-4
+  d_lr: 1e-4  # For sweep, use CLI: -m acgan.d_lr=0.0005,0.0007,0.001
   c1: true
   c2: true
   c3: true
@@ -110,7 +110,7 @@ logging:
 # -------------------------
 hydra:
   run:
-    dir: ${logging.log_dir}/${now:%Y-%m-%d}/c1-${acgan.c1}_c2-${acgan.c2}_c3-${acgan.c3}_zdim-${acgan.z_dim}
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/FedCIL_${now:%H-%M-%S}
   sweep:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/g_lr-d_lr-sweep${now:%H-%M-%S}
     subdir: c1-${acgan.c1}_c2-${acgan.c2}_c3-${acgan.c3}_zdim-${acgan.z_dim}

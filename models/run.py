@@ -366,6 +366,12 @@ def main(cfg: DictConfig) -> None:
 			writer.add_scalar("train/loss_ce", metrics["loss_ce"], step)
 		if "gan_loss_d" in metrics:
 			writer.add_scalar("train/gan_loss_d", metrics["gan_loss_d"], step)
+		if "gan_loss_d_real" in metrics:
+			writer.add_scalar("train/gan_loss_d_real", metrics["gan_loss_d_real"], step)
+		if "gan_loss_d_replay" in metrics:
+			writer.add_scalar("train/gan_loss_d_replay", metrics["gan_loss_d_replay"], step)
+		if "gan_loss_d_fake" in metrics:
+			writer.add_scalar("train/gan_loss_d_fake", metrics["gan_loss_d_fake"], step)
 		if "gan_loss_g" in metrics:
 			writer.add_scalar("train/gan_loss_g", metrics["gan_loss_g"], step)
 		if "gan_loss_dis_g" in metrics:
@@ -386,7 +392,8 @@ def main(cfg: DictConfig) -> None:
 		log.info(
 			f"[{bar}] {pct:5.1f}% | Task {task.task_id + 1}/{len(stream)} | Round {round_idx + 1}/{server_cfg.global_rounds} | "
 			f"Acc: {acc_str} | CE: {metrics.get('loss_ce', 0.0):.4f} | "
-			f"GAN_D: {metrics.get('gan_loss_d', 0.0):.4f} | GAN_G: {metrics.get('gan_loss_g', 0.0):.4f} | GAN_G_DIS: {metrics.get('gan_loss_dis_g', 0.0):.4f} | GAN_G_AUX: {metrics.get('gan_loss_aux_g', 0.0):.4f} | "
+			f"GAN_D: {metrics.get('gan_loss_d', 0.0):.4f} | GAN_D_REAL: {metrics.get('gan_loss_d_real', 0.0):.4f} | GAN_D_REPLAY: {metrics.get('gan_loss_d_replay', 0.0):.4f} | GAN_D_FAKE: {metrics.get('gan_loss_d_fake', 0.0):.4f} | "
+			f"GAN_G: {metrics.get('gan_loss_g', 0.0):.4f} | GAN_G_DIS: {metrics.get('gan_loss_dis_g', 0.0):.4f} | GAN_G_AUX: {metrics.get('gan_loss_aux_g', 0.0):.4f} | "
 			f"Elapsed: {format_seconds(elapsed)} | ETA: {format_seconds(eta)}"
 		)
 		global_step += 1

@@ -458,7 +458,7 @@ class IncrementalACGAN(nn.Module):
         _, logits = self.D(x)
         return logits
     
-    def train_D_loss(self, x_real: torch.Tensor, y_real: torch.Tensor, x_fake: torch.Tensor, y_fake: torch.Tensor) -> torch.Tensor:
+    def train_D_loss(self, x_real: torch.Tensor, y_real: torch.Tensor, x_fake_prev: torch.Tensor, y_fake_prev: torch.Tensor, x_fake_curr: torch.Tensor, y_fake_curr: torch.Tensor) -> torch.Tensor:
         """Compute discriminator loss with gradient for a batch."""
         
         # Real images
@@ -466,16 +466,28 @@ class IncrementalACGAN(nn.Module):
         loss_dis_real = self.dis_loss_fn(dis_real, torch.ones_like(dis_real))
         loss_aux_real = self.aux_loss_fn(aux_real, y_real)
 
-        # Fake images
-        dis_fake, aux_fake = self.D(x_fake)
-        loss_dis_fake = self.dis_loss_fn(dis_fake, torch.zeros_like(dis_fake))
-        loss_aux_fake = self.aux_loss_fn(aux_fake, y_fake)
+        # Fake images (previous)
+        if x_fake_prev is not None:
+            dis_fake_prev, aux_fake_prev = self.D(x_fake_prev)
+            loss_dis_fake_prev = self.dis_loss_fn(dis_fake_prev, torch.zeros_like(dis_fake_prev))
+            loss_aux_fake_prev = self.aux_loss_fn(aux_fake_prev, y_fake_prev)
+        else:
+            loss_dis_fake_prev = torch.tensor(0.0, device=x_real.device)
+            loss_aux_fake_prev = torch.tensor(0.0, device=x_real.device)
+
+        # Fake images (current)
+        dis_fake_curr, aux_fake_curr = self.D(x_fake_curr)
+        loss_dis_fake_curr = self.dis_loss_fn(dis_fake_curr, torch.zeros_like(dis_fake_curr))
+        loss_aux_fake_curr = self.aux_loss_fn(aux_fake_curr, y_fake_curr)
 
         # Total D loss
-        loss_d = loss_dis_real + loss_dis_fake + loss_aux_real + loss_aux_fake
-        loss_d_log = loss_dis_real.item() + loss_dis_fake.item()
-        loss_aux_log = loss_aux_real.item() + loss_aux_fake.item()
-        return loss_d, loss_d_log, loss_aux_log
+        loss_d_replay = loss_dis_fake_prev + loss_aux_fake_prev
+        loss_d_real = loss_dis_real + loss_aux_real
+        loss_d_fake = loss_dis_fake_curr + loss_aux_fake_curr
+        
+        loss_d = loss_d_real + loss_d_fake + loss_d_replay
+        
+        return loss_d, loss_d_real.item(), loss_d_replay.item(), loss_d_fake.item()
     
     def train_G_loss(self, x_fake: torch.Tensor, y_fake: torch.Tensor) -> torch.Tensor:
         """Compute generator loss with gradient for a batch."""
@@ -494,6 +506,7 @@ class IncrementalACGAN(nn.Module):
         y_real: torch.Tensor,
         sample_classes: List[int],
         n_replay: int = 0,
+        prev_model: Optional[IncrementalACGAN] = None,
     ) -> Dict[str, float]:
         """
         Single training step for ACGAN.
@@ -522,32 +535,59 @@ class IncrementalACGAN(nn.Module):
         self.D.train()
         self.d_optimizer.zero_grad()
 
-        # Generate fake images
-        # Sample random noise
-        z = torch.randn(n_replay, self.z_dim, device=device)
+        # ============================
+        # A. PREPARE REPLAY DATA
+        # ============================
+        z_prev = torch.randn(n_replay, self.z_dim, device=device)
 
         # Sample random labels from known classes, uniformly
-        if sample_classes and n_replay > 0:
+        if sample_classes:
             y_fake = torch.tensor(
                 [sample_classes[i] for i in torch.randint(0, len(sample_classes), (n_replay,))],
                 dtype=torch.long,
                 device=device
             )
         else:
-            if n_replay > 0 and n_replay <= batch_size:
-                y_fake = y_real[:n_replay]
-            elif n_replay > 0 and n_replay > batch_size:
-                y_fake = torch.cat([y_real] * (n_replay // batch_size) + [y_real[:n_replay % batch_size]], dim=0)
+            y_fake = y_real[:n_replay]
 
-        x_fake_raw = self.G(z, y_fake)
-        x_fake = x_fake_raw.detach()  # Detach to avoid gradients to G
+        if prev_model is not None:
+            with torch.no_grad():
+                x_fake_prev = prev_model.G(z_prev, y_fake)
+        else:
+            x_fake_prev = None
 
-        loss_d, loss_d_log, loss_aux_log = self.train_D_loss(x_real, y_real, x_fake, y_fake)
+
+        # ============================
+        # B. GENERATE FAKE IMAGES
+        # ============================
+        z_curr = torch.randn(batch_size, self.z_dim, device=device)
+        x_fake_curr = self.G(z_curr, y_real)
+
+
+        # ============================
+        # C. COMPUTE D LOSS AND UPDATE
+        # ============================
+
+        loss_d, loss_d_real, loss_d_replay, loss_d_fake = self.train_D_loss(
+            x_real=x_real,
+            y_real=y_real,
+            x_fake_prev=x_fake_prev,
+            y_fake_prev=y_fake,
+            x_fake_curr=x_fake_curr,
+            y_fake_curr=y_real,
+        )
+
         loss_d.backward()
         self.d_optimizer.step()
+
+        # ============================
+        # LOG METRICS
+        # ============================
         
-        metrics["loss_d"] = loss_d_log
-        metrics["loss_aux"] = loss_aux_log
+        metrics["loss_d"] = loss_d.item()
+        metrics["loss_d_real"] = loss_d_real
+        metrics["loss_d_replay"] = loss_d_replay
+        metrics["loss_d_fake"] = loss_d_fake
         
         # ============================
         # Train Generator
@@ -627,7 +667,6 @@ class IncrementalACGAN(nn.Module):
             aux_probs_teacher = F.softmax(aux_logits_teacher, dim=1)
         else:
             # use onehot y_teacher to get aux_probs_teacher
-            batch_size = x_teacher.size(0)
             y_onehot = F.one_hot(y_teacher, num_classes=self.num_classes).float()
             aux_probs_teacher = y_onehot
         _, aux_logits_student = self.D(x_student)
@@ -679,6 +718,12 @@ class IncrementalACGAN(nn.Module):
         x_real = x_real.to(device)
         y_real = y_real.to(device)
 
+        # Sanity check: skip if y_real contains classes not known by prev_global_model
+        max_label = y_real.max().item()
+        if max_label >= prev_global_model.num_classes:
+            # Skip distillation if labels are out of bounds for prev_global_model
+            return
+
         z = torch.randn(x_real.size(0), self.z_dim, device=device)
         with torch.no_grad():
             x_student = prev_global_model.G(z, y_real)
@@ -694,17 +739,40 @@ class IncrementalACGAN(nn.Module):
             prev_known_classes: List of known class labels in previous task
             n_distill: Number of distillation samples to generate
         """
-        device = next(self.G.parameters()).device
-        
-        z = torch.randn(n_distill, self.z_dim, device=device)
-        y_distill = torch.tensor(
-            [prev_known_classes[i] for i in torch.randint(0, len(prev_known_classes), (n_distill,))],
-            dtype=torch.long,
-            device=device
-        )
-        x_student = prev_global_model.G(z, y_distill)
+        try:
+            device = next(self.G.parameters()).device
+            
+            # Validate that prev_known_classes are within bounds for prev_global_model
+            if prev_known_classes:
+                max_prev_class = max(prev_known_classes)
+                if max_prev_class >= prev_global_model.num_classes:
+                    raise ValueError(
+                        f"Class index out of bounds: max class in prev_known_classes ({max_prev_class}) "
+                        f">= prev_global_model.num_classes ({prev_global_model.num_classes})"
+                    )
+            
+            z = torch.randn(n_distill, self.z_dim, device=device)
+            y_distill = torch.tensor(
+                [prev_known_classes[i] for i in torch.randint(0, len(prev_known_classes), (n_distill,))],
+                dtype=torch.long,
+                device=device
+            )
+            x_student = prev_global_model.G(z, y_distill)
 
-        self.distill_step(x_teacher=None, x_student=x_student, y_teacher=y_distill)
+            self.distill_step(x_teacher=None, x_student=x_student, y_teacher=y_distill)
+        
+        except (RuntimeError, IndexError, ValueError) as e:
+            print(f"\n{'='*80}")
+            print(f"ERROR in distill_c3:")
+            print(f"  Error type: {type(e).__name__}")
+            print(f"  Error message: {str(e)}")
+            print(f"  prev_known_classes: {prev_known_classes}")
+            print(f"  prev_global_model.num_classes: {prev_global_model.num_classes}")
+            print(f"  self.num_classes: {self.num_classes}")
+            print(f"  n_distill: {n_distill}")
+            print(f"{'='*80}\n")
+            import sys
+            sys.exit(1)
         
         
 
