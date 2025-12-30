@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=mnist-fcil
+#SBATCH --job-name=mnist-c123-z128
 #SBATCH --partition=gpuq
 #SBATCH --qos=gpu                       # required for gpuq on Hopper
 #SBATCH --output=/home/hli54/scratch/logs/fcil/slurm-log/%j-out.log
@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:A100.80gb:1
-#SBATCH --time=3-00:00:00
+#SBATCH --time=1-00:00:00
 
 # Load modules (adjust based on your cluster)
 # module load python/3.10

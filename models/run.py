@@ -213,7 +213,10 @@ def main(cfg: DictConfig) -> None:
 		replay_ratio=cfg.replay.ratio,
 		max_grad_norm=cfg.training.max_grad_norm,
 		classification_head_type=cfg.model.classification_head_type,
-		hidden_dim=cfg.model.hidden_dim
+		hidden_dim=cfg.model.hidden_dim,
+		c1=cfg.acgan.c1,
+		c2=cfg.acgan.c2,
+		c3=cfg.acgan.c3,
 	)
 	server_cfg = ServerConfig(
 		global_rounds=cfg.training.global_rounds,
@@ -285,7 +288,11 @@ def main(cfg: DictConfig) -> None:
 	# Store config values needed in closure
 	eval_every = cfg.logging.eval_every
 	max_concurrent_clients = cfg.system.max_concurrent_clients
-	z_dim = cfg.gan.get("z_dim", 128)  # Get GAN's z_dim from config for sample generation
+	# Get z_dim from the appropriate config section based on client type
+	if client_type == "acgan":
+		z_dim = cfg.acgan.get("z_dim", 100)
+	else:
+		z_dim = cfg.gan.get("z_dim", 128)
 	
 	# Initialize accuracy matrix for continual learning metrics
 	num_tasks = len(stream)
@@ -361,6 +368,10 @@ def main(cfg: DictConfig) -> None:
 			writer.add_scalar("train/gan_loss_d", metrics["gan_loss_d"], step)
 		if "gan_loss_g" in metrics:
 			writer.add_scalar("train/gan_loss_g", metrics["gan_loss_g"], step)
+		if "gan_loss_dis_g" in metrics:
+			writer.add_scalar("train/gan_loss_dis_g", metrics["gan_loss_dis_g"], step)
+		if "gan_loss_aux_g" in metrics:
+			writer.add_scalar("train/gan_loss_aux_g", metrics["gan_loss_aux_g"], step)
 		writer.add_scalar("time/eta_sec", eta, step)
 		writer.add_scalar("time/elapsed_sec", elapsed, step)
 		
@@ -375,7 +386,7 @@ def main(cfg: DictConfig) -> None:
 		log.info(
 			f"[{bar}] {pct:5.1f}% | Task {task.task_id + 1}/{len(stream)} | Round {round_idx + 1}/{server_cfg.global_rounds} | "
 			f"Acc: {acc_str} | CE: {metrics.get('loss_ce', 0.0):.4f} | "
-			f"GAN_D: {metrics.get('gan_loss_d', 0.0):.4f} | GAN_G: {metrics.get('gan_loss_g', 0.0):.4f} | "
+			f"GAN_D: {metrics.get('gan_loss_d', 0.0):.4f} | GAN_G: {metrics.get('gan_loss_g', 0.0):.4f} | GAN_G_DIS: {metrics.get('gan_loss_dis_g', 0.0):.4f} | GAN_G_AUX: {metrics.get('gan_loss_aux_g', 0.0):.4f} | "
 			f"Elapsed: {format_seconds(elapsed)} | ETA: {format_seconds(eta)}"
 		)
 		global_step += 1

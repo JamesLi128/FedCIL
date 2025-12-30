@@ -143,15 +143,15 @@ class ACGANGenerator(nn.Module):
                 # 4x4 -> 8x8
                 nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),
                 nn.BatchNorm2d(256),
-                nn.ReLU(),
+                nn.LeakyReLU(0.2),
                 # 8x8 -> 16x16
                 nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
                 nn.BatchNorm2d(128),
-                nn.ReLU(),
+                nn.LeakyReLU(0.2),
                 # 16x16 -> 32x32
                 nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
                 nn.BatchNorm2d(64),
-                nn.ReLU(),
+                nn.LeakyReLU(0.2),
                 # Final conv to get 3 channels
                 nn.Conv2d(64, arch.img_channels, kernel_size=3, stride=1, padding=1),
                 nn.Tanh(),
@@ -439,6 +439,10 @@ class IncrementalACGAN(nn.Module):
         self.d_optimizer = torch.optim.Adam(
             self.D.parameters(), lr=d_lr, betas=(0.5, 0.999)
         )
+        # Only update discriminator auxiliary head during distillation
+        self.distill_optimizer = torch.optim.Adam(
+            self.D.fc_aux.parameters(), lr=d_lr, betas=(0.5, 0.999)
+        )
         
         self.dis_loss_fn = nn.BCEWithLogitsLoss()
         self.aux_loss_fn = nn.CrossEntropyLoss()
@@ -482,7 +486,7 @@ class IncrementalACGAN(nn.Module):
         loss_aux_g = self.aux_loss_fn(aux_fake, y_fake)
         
         loss_g = loss_dis_g + loss_aux_g
-        return loss_g
+        return loss_g, loss_dis_g.item(), loss_aux_g.item()
     
     def train_step(
         self, 
@@ -567,11 +571,13 @@ class IncrementalACGAN(nn.Module):
                 
         x_fake = self.G(z, y_gen)
         
-        loss_g = self.train_G_loss(x_fake, y_gen)
+        loss_g, loss_dis_g, loss_aux_g = self.train_G_loss(x_fake, y_gen)
         loss_g.backward()
         self.g_optimizer.step()
         
         metrics["loss_g"] = loss_g.item()
+        metrics["loss_dis_g"] = loss_dis_g
+        metrics["loss_aux_g"] = loss_aux_g
     
         return metrics
     
@@ -605,6 +611,102 @@ class IncrementalACGAN(nn.Module):
         loss_distill.backward()
         self.d_optimizer.step()
 
+    def distill_step(self, x_teacher: torch.Tensor, x_student: torch.Tensor, y_teacher: torch.Tensor = None) -> None:
+        """
+        Distillation step using two sets of generated samples.
+        
+        Args:
+            x1: First set of generated images for distillation
+            x2: Second set of generated images for distillation
+        """
+        self.D.train()
+        self.distill_optimizer.zero_grad()
+        
+        if y_teacher == None:
+            _, aux_logits_teacher = self.D(x_teacher)
+            aux_probs_teacher = F.softmax(aux_logits_teacher, dim=1)
+        else:
+            # use onehot y_teacher to get aux_probs_teacher
+            batch_size = x_teacher.size(0)
+            y_onehot = F.one_hot(y_teacher, num_classes=self.num_classes).float()
+            aux_probs_teacher = y_onehot
+        _, aux_logits_student = self.D(x_student)
+        aux_probs_student = F.softmax(aux_logits_student, dim=1)
+
+        aux_loss = F.kl_div(aux_probs_student.log(), aux_probs_teacher, reduction='batchmean')
+        aux_loss.backward()
+        self.distill_optimizer.step()
+
+
+
+    def distill_c1(self, prev_local_model: IncrementalACGAN, prev_global_model: IncrementalACGAN, prev_known_classes: List[int], n_distill: int) -> None:
+        """
+        Distill knowledge from previous local and global models using generated samples.
+        
+        Args:
+            prev_local_model: Previous local IncrementalACGAN model
+            prev_global_model: Previous global IncrementalACGAN model
+            prev_known_classes: List of known class labels in previous task
+            n_distill: Number of distillation samples to generate
+        """
+        device = next(self.G.parameters()).device
+        
+        # Generate distillation samples from previous local model
+        z = torch.randn(n_distill, self.z_dim, device=device)
+        y_distill = torch.tensor(
+            [prev_known_classes[i] for i in torch.randint(0, len(prev_known_classes), (n_distill,))],
+            dtype=torch.long,
+            device=device
+        )
+        
+        with torch.no_grad():
+            x_teacher = prev_local_model.G(z, y_distill)
+            x_student = prev_global_model.G(z, y_distill)
+
+        self.distill_step(x_teacher=x_teacher, x_student=x_student)
+
+    def distill_c2(self, prev_global_model: IncrementalACGAN, x_real: torch.Tensor, y_real: torch.Tensor) -> None:
+        """
+        Distill knowledge from previous global model using real samples.
+        
+        Args:
+            prev_global_model: Previous global IncrementalACGAN model
+            x_real: Real images for distillation
+            y_real: True labels for real images
+        """
+        device = next(self.G.parameters()).device
+        
+        x_real = x_real.to(device)
+        y_real = y_real.to(device)
+
+        z = torch.randn(x_real.size(0), self.z_dim, device=device)
+        with torch.no_grad():
+            x_student = prev_global_model.G(z, y_real)
+
+        self.distill_step(x_teacher=x_real, x_student=x_student)
+
+    def distill_c3(self, prev_global_model: IncrementalACGAN, prev_known_classes: List[int], n_distill: int) -> None:
+        """
+        Distill knowledge from previous global model using generated samples.
+        
+        Args:
+            prev_global_model: Previous global IncrementalACGAN model
+            prev_known_classes: List of known class labels in previous task
+            n_distill: Number of distillation samples to generate
+        """
+        device = next(self.G.parameters()).device
+        
+        z = torch.randn(n_distill, self.z_dim, device=device)
+        y_distill = torch.tensor(
+            [prev_known_classes[i] for i in torch.randint(0, len(prev_known_classes), (n_distill,))],
+            dtype=torch.long,
+            device=device
+        )
+        x_student = prev_global_model.G(z, y_distill)
+
+        self.distill_step(x_teacher=None, x_student=x_student, y_teacher=y_distill)
+        
+        
 
     @torch.no_grad()
     def sample(self, n: int, labels: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:

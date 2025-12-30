@@ -92,6 +92,7 @@ class ACGANClient(BaseClient):
         self.device = device
         self.model = model.to(device)
         self.cfg = cfg
+        self.prev_local_model = None
         self.prev_known_classes: List[int] = []
         self.known_classes: List[int] = []
         
@@ -135,6 +136,8 @@ class ACGANClient(BaseClient):
             "loss_ce": 0.0,  # Auxiliary classification loss
             "loss_d": 0.0,
             "loss_g": 0.0,
+            "loss_dis_g": 0.0,
+            "loss_aux_g": 0.0,
             "steps": 0.0,
         }
         
@@ -155,24 +158,41 @@ class ACGANClient(BaseClient):
                 step_metrics = self.model.train_step(x, y, n_replay=n_rep, sample_classes=self.prev_known_classes)
 
                 # Distillation from previous global model if provided
+                # if prev_global_model is not None:
+                #     self.model.KL_distill_from(prev_global_model, x, y)
+
                 if prev_global_model is not None:
-                    self.model.KL_distill_from(prev_global_model, x, y)
+                    if self.cfg.c2:
+                        self.model.distill_c2(prev_global_model, x, y)
+                    if self.cfg.c3 and self.prev_known_classes:
+                        self.model.distill_c3(prev_global_model, self.prev_known_classes, n_distill=n_rep)
+                    if self.cfg.c1 and self.prev_local_model is not None and self.prev_known_classes:
+                        self.model.distill_c1(self.prev_local_model, prev_global_model, self.prev_known_classes, n_distill=n_rep)
                 
                 metrics["loss_d"] += step_metrics.get("loss_d", 0.0)
                 metrics["loss_g"] += step_metrics.get("loss_g", 0.0)
                 metrics["loss_ce"] += step_metrics.get("loss_aux", 0.0)
+                metrics["loss_dis_g"] += step_metrics.get("loss_dis_g", 0.0)
+                metrics["loss_aux_g"] += step_metrics.get("loss_aux_g", 0.0)
                 metrics["steps"] += 1.0
+        
+        self.prev_local_model = deepcopy(self.model)
+        for param in self.prev_local_model.parameters():
+            param.requires_grad = False
         
         # Average metrics
         if metrics["steps"] > 0:
             metrics["loss_d"] /= metrics["steps"]
             metrics["loss_g"] /= metrics["steps"]
             metrics["loss_ce"] /= metrics["steps"]
+            metrics["loss_dis_g"] /= metrics["steps"]
+            metrics["loss_aux_g"] /= metrics["steps"]
         
         # Rename for consistency with other clients
         metrics["gan_loss_d"] = metrics.pop("loss_d")
         metrics["gan_loss_g"] = metrics.pop("loss_g")
-        
+        metrics["gan_loss_dis_g"] = metrics.pop("loss_dis_g")
+        metrics["gan_loss_aux_g"] = metrics.pop("loss_aux_g")
         return ACGANClientUpdate(
             client_id=self.client_id,
             num_samples=total_samples,
@@ -404,17 +424,17 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
                 self.server.server_optimize_step()
 
                 with torch.no_grad():
-                    self.prev_global_model = deepcopy(self.server.model)
-                    for param in self.prev_global_model.parameters():
+                    prev_global_model = deepcopy(self.server.model)
+                    for param in prev_global_model.parameters():
                         param.requires_grad = False
-                    self.prev_global_model.eval()
+                    prev_global_model.eval()
                 
                 if round_hook is not None:
                     # Convert to standard ClientUpdate for metrics
                     metrics = {}
                     total_samples = sum(u.num_samples for u in updates)
                     if total_samples > 0:
-                        for key in ["loss_ce", "gan_loss_d", "gan_loss_g"]:
+                        for key in ["loss_ce", "gan_loss_d", "gan_loss_g", "gan_loss_dis_g", "gan_loss_aux_g"]:
                             val = sum(u.metrics.get(key, 0) * u.num_samples for u in updates if u.metrics)
                             metrics[key] = val / total_samples
                     round_hook(task, r, updates, metrics)

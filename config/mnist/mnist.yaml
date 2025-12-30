@@ -38,8 +38,8 @@ client:
 # Training Hyperparameters
 # -------------------------
 training:
-  global_rounds: 10
-  local_epochs: 5
+  global_rounds: 40
+  local_epochs: 3
   batch_size: 64
   eval_batch_size: 512
   lr: 1e-3
@@ -81,9 +81,12 @@ gan:
 # ACGAN Configuration (only used when client.type=acgan)
 # -------------------------
 acgan:
-  z_dim: 50
+  z_dim: 128
   g_lr: 1e-3
-  d_lr: 2e-4
+  d_lr: 1e-3  # For sweep, use CLI: -m acgan.d_lr=0.0005,0.0007,0.001
+  c1: true
+  c2: true
+  c3: true
 
 # -------------------------
 # System & Paths
@@ -107,9 +110,9 @@ logging:
 # -------------------------
 hydra:
   run:
-    dir: ${logging.log_dir}/${now:%Y-%m-%d}/client_distill_large_g_lr-${acgan.g_lr}-${now:%H-%M-%S}
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/c1-${acgan.c1}_c2-${acgan.c2}_c3-${acgan.c3}_zdim-${acgan.z_dim}
   sweep:
-    dir: ${logging.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: acgan
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/g_lr-d_lr-sweep${now:%H-%M-%S}
+    subdir: c1-${acgan.c1}_c2-${acgan.c2}_c3-${acgan.c3}_zdim-${acgan.z_dim}
   job:
     chdir: false  # Don't change working directory

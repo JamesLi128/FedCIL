@@ -18,6 +18,9 @@ class ClientConfig:
     max_grad_norm: Optional[float] = None,  # gradient clipping
     classification_head_type: str = "singlehead"  # "singlehead" or "multilayer"
     hidden_dim: Optional[int] = None        # for multilayer classifier only
+    c1: bool = False                      # whether to use distillation c1
+    c2: bool = False                      # whether to use distillation c2
+    c3: bool = False                      # whether to use distillation c3
 
 
 @dataclass
