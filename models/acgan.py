@@ -506,7 +506,7 @@ class IncrementalACGAN(nn.Module):
         y_real: torch.Tensor,
         sample_classes: List[int],
         n_replay: int = 0,
-        prev_model: Optional[IncrementalACGAN] = None,
+        prev_task_model: Optional[IncrementalACGAN] = None,
     ) -> Dict[str, float]:
         """
         Single training step for ACGAN.
@@ -550,9 +550,9 @@ class IncrementalACGAN(nn.Module):
         else:
             y_fake = y_real[:n_replay]
 
-        if prev_model is not None:
+        if prev_task_model is not None:
             with torch.no_grad():
-                x_fake_prev = prev_model.G(z_prev, y_fake)
+                x_fake_prev = prev_task_model.G(z_prev, y_fake)
         else:
             x_fake_prev = None
 
@@ -622,13 +622,13 @@ class IncrementalACGAN(nn.Module):
     
         return metrics
     
-    def KL_distill_from(self, prev_model: IncrementalACGAN, x: torch.Tensor, y: torch.Tensor) -> None:
+    def KL_distill_from(self, prev_task_model: IncrementalACGAN, x: torch.Tensor, y: torch.Tensor) -> None:
         """
         Distill knowledge from previous model using generated samples.
         Use KL divergence to match auxiliary classifier outputs.
         
         Args:
-            prev_model: Previous IncrementalACGAN model
+            prev_task_model: Previous IncrementalACGAN model
             x: Input images for distillation
             y: True labels for input images
         """
@@ -637,7 +637,7 @@ class IncrementalACGAN(nn.Module):
         
         # Get previous model's predictions
         with torch.no_grad():
-            _, prev_aux_logits = prev_model.D(x)
+            _, prev_aux_logits = prev_task_model.D(x)
             prev_aux_probs = F.softmax(prev_aux_logits, dim=1)
             
         

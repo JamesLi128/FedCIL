@@ -92,7 +92,7 @@ class ACGANClient(BaseClient):
         self.device = device
         self.model = model.to(device)
         self.cfg = cfg
-        self.prev_local_model = None
+        # self.prev_local_model = None
         self.known_classes: List[int] = []
         
         # Create replay wrapper for consistency with other code
@@ -116,7 +116,7 @@ class ACGANClient(BaseClient):
             dis_state = {k: v.to(self.device) for k, v in payload.global_dis_state.items()}
             self.model.load_discriminator_state_dict(dis_state)
     
-    def fit_one_task(self, task: TaskInfo, train_loader, prev_global_model: Optional[IncrementalACGAN] = None, prev_classes: Optional[List[int]] = None, is_first_round: bool = False) -> ACGANClientUpdate:
+    def fit_one_task(self, task: TaskInfo, train_loader, prev_global_model: Optional[IncrementalACGAN] = None, prev_task_model: Optional [IncrementalACGAN] = None, prev_classes: Optional[List[int]] = None, is_first_round: bool = False) -> ACGANClientUpdate:
         """
         Train ACGAN on local data for one task.
         
@@ -156,7 +156,7 @@ class ACGANClient(BaseClient):
                     n_rep = 0
                 
                 # Train ACGAN
-                step_metrics = self.model.train_step(x, y, n_replay=n_rep, sample_classes=prev_classes, prev_model=self.prev_local_model)
+                step_metrics = self.model.train_step(x, y, n_replay=n_rep, sample_classes=prev_classes, prev_task_model=prev_task_model)
 
                 # Distillation from previous global model if provided
                 # if prev_global_model is not None:
@@ -167,8 +167,8 @@ class ACGANClient(BaseClient):
                         self.model.distill_c2(prev_global_model, x, y)
                     if self.cfg.c3 and prev_classes:
                         self.model.distill_c3(prev_global_model, prev_classes, n_distill=n_rep)
-                    if self.cfg.c1 and self.prev_local_model is not None and prev_classes:
-                        self.model.distill_c1(self.prev_local_model, prev_global_model, prev_classes, n_distill=n_rep)
+                    if self.cfg.c1 and prev_task_model is not None and prev_classes:
+                        self.model.distill_c1(prev_task_model, prev_global_model, prev_classes, n_distill=n_rep)
                 
                 metrics["loss_d"] += step_metrics.get("loss_d", 0.0)
                 metrics["loss_d_real"] += step_metrics.get("loss_d_real", 0.0)
@@ -180,9 +180,9 @@ class ACGANClient(BaseClient):
                 metrics["loss_aux_g"] += step_metrics.get("loss_aux_g", 0.0)
                 metrics["steps"] += 1.0
         
-        self.prev_local_model = deepcopy(self.model)
-        for param in self.prev_local_model.parameters():
-            param.requires_grad = False
+        # self.prev_local_model = deepcopy(self.model)
+        # for param in self.prev_local_model.parameters():
+        #     param.requires_grad = False
         
         # Average metrics
         if metrics["steps"] > 0:
@@ -414,6 +414,7 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
     ) -> None:
         """Run federated training."""
         prev_global_model = None
+        prev_task_model = None
         prev_classes = []
         for task, per_client_loaders in stream:
             self._on_new_task(task)
@@ -429,7 +430,7 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
                 for cid in chosen:
                     c = self.clients[cid]
                     c.load_server_payload(payload)
-                    upd = c.fit_one_task(task, per_client_loaders[cid], prev_global_model=prev_global_model, prev_classes=prev_classes, is_first_round=(r==0))
+                    upd = c.fit_one_task(task, per_client_loaders[cid], prev_global_model=prev_global_model, prev_task_model=prev_task_model, prev_classes=prev_classes, is_first_round=(r==0))
                     updates.append(upd)
                 
                 self.server.aggregate(updates)
@@ -449,7 +450,14 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
                         for key in ["loss_ce", "gan_loss_d", "gan_loss_d_real", "gan_loss_d_replay", "gan_loss_d_fake", "gan_loss_g", "gan_loss_dis_g", "gan_loss_aux_g"]:
                             val = sum(u.metrics.get(key, 0) * u.num_samples for u in updates if u.metrics)
                             metrics[key] = val / total_samples
-                    round_hook(task, r, updates, metrics)           
+                    round_hook(task, r, updates, metrics)       
+
+            # prev_task_model
+            with torch.no_grad():
+                prev_global_model = deepcopy(self.server.model)
+                for param in prev_global_model.parameters():
+                    param.requires_grad = False
+                prev_global_model.eval()
             
             prev_classes = list(self.server.known_classes)
     
