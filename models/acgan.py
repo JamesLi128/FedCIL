@@ -478,12 +478,12 @@ class IncrementalACGAN(nn.Module):
         # Fake images (current)
         dis_fake_curr, aux_fake_curr = self.D(x_fake_curr)
         loss_dis_fake_curr = self.dis_loss_fn(dis_fake_curr, torch.zeros_like(dis_fake_curr))
-        loss_aux_fake_curr = self.aux_loss_fn(aux_fake_curr, y_fake_curr)
+        # loss_aux_fake_curr = self.aux_loss_fn(aux_fake_curr, y_fake_curr)
 
         # Total D loss
         loss_d_replay = loss_dis_fake_prev + loss_aux_fake_prev
         loss_d_real = loss_dis_real + loss_aux_real
-        loss_d_fake = loss_dis_fake_curr + loss_aux_fake_curr
+        loss_d_fake = loss_dis_fake_curr
         
         loss_d = loss_d_real + loss_d_fake + loss_d_replay
         
