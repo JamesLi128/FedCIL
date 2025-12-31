@@ -110,7 +110,7 @@ logging:
 # -------------------------
 hydra:
   run:
-    dir: ${logging.log_dir}/${now:%Y-%m-%d}/FedCIL_g-lr_no-fake-aux_prev-as-ones_${now:%H-%M-%S}
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/FedCIL_prev-task-model_${now:%H-%M-%S}
   sweep:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/g_lr-d_lr-sweep${now:%H-%M-%S}
     subdir: c1-${acgan.c1}_c2-${acgan.c2}_c3-${acgan.c3}_zdim-${acgan.z_dim}

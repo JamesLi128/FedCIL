@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=mnist-FedCIL-no-aux-as-ones
+#SBATCH --job-name=mnist-FedCIL-prev-task-model
 #SBATCH --partition=gpuq
 #SBATCH --qos=gpu                       # required for gpuq on Hopper
 #SBATCH --output=/home/hli54/scratch/logs/fcil/slurm-log/%j-out.log
@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:A100.40gb:1
+#SBATCH --gres=gpu:A100.80gb:1
 #SBATCH --time=1-00:00:00
 
 # Load modules (adjust based on your cluster)
