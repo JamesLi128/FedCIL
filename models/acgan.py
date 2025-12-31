@@ -469,7 +469,7 @@ class IncrementalACGAN(nn.Module):
         # Fake images (previous)
         if x_fake_prev is not None:
             dis_fake_prev, aux_fake_prev = self.D(x_fake_prev)
-            loss_dis_fake_prev = self.dis_loss_fn(dis_fake_prev, torch.zeros_like(dis_fake_prev))
+            loss_dis_fake_prev = self.dis_loss_fn(dis_fake_prev, torch.ones_like(dis_fake_prev))
             loss_aux_fake_prev = self.aux_loss_fn(aux_fake_prev, y_fake_prev)
         else:
             loss_dis_fake_prev = torch.tensor(0.0, device=x_real.device)
