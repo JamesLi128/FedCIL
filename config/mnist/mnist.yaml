@@ -82,7 +82,7 @@ gan:
 # -------------------------
 acgan:
   z_dim: 128
-  g_lr: 1e-4
+  g_lr: 1e-3
   d_lr: 1e-4  # For sweep, use CLI: -m acgan.d_lr=0.0005,0.0007,0.001
   c1: true
   c2: true
@@ -110,7 +110,7 @@ logging:
 # -------------------------
 hydra:
   run:
-    dir: ${logging.log_dir}/${now:%Y-%m-%d}/FedCIL_${now:%H-%M-%S}
+    dir: ${logging.log_dir}/${now:%Y-%m-%d}/FedCIL_g-lr-${acgan.g_lr}_${now:%H-%M-%S}
   sweep:
     dir: ${logging.log_dir}/${now:%Y-%m-%d}/g_lr-d_lr-sweep${now:%H-%M-%S}
     subdir: c1-${acgan.c1}_c2-${acgan.c2}_c3-${acgan.c3}_zdim-${acgan.z_dim}

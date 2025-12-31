@@ -175,7 +175,7 @@ class ACGANClient(BaseClient):
                 metrics["loss_d_replay"] += step_metrics.get("loss_d_replay", 0.0)
                 metrics["loss_d_fake"] += step_metrics.get("loss_d_fake", 0.0)
                 metrics["loss_g"] += step_metrics.get("loss_g", 0.0)
-                metrics["loss_ce"] += step_metrics.get("loss_aux", 0.0)
+                metrics["loss_ce"] += step_metrics.get("loss_ce", 0.0)
                 metrics["loss_dis_g"] += step_metrics.get("loss_dis_g", 0.0)
                 metrics["loss_aux_g"] += step_metrics.get("loss_aux_g", 0.0)
                 metrics["steps"] += 1.0

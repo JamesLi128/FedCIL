@@ -487,7 +487,7 @@ class IncrementalACGAN(nn.Module):
         
         loss_d = loss_d_real + loss_d_fake + loss_d_replay
         
-        return loss_d, loss_d_real.item(), loss_d_replay.item(), loss_d_fake.item()
+        return loss_d, loss_aux_real.item(), loss_d_real.item(), loss_d_replay.item(), loss_d_fake.item()
     
     def train_G_loss(self, x_fake: torch.Tensor, y_fake: torch.Tensor) -> torch.Tensor:
         """Compute generator loss with gradient for a batch."""
@@ -568,7 +568,7 @@ class IncrementalACGAN(nn.Module):
         # C. COMPUTE D LOSS AND UPDATE
         # ============================
 
-        loss_d, loss_d_real, loss_d_replay, loss_d_fake = self.train_D_loss(
+        loss_d, loss_ce, loss_d_real, loss_d_replay, loss_d_fake = self.train_D_loss(
             x_real=x_real,
             y_real=y_real,
             x_fake_prev=x_fake_prev,
@@ -585,6 +585,7 @@ class IncrementalACGAN(nn.Module):
         # ============================
         
         metrics["loss_d"] = loss_d.item()
+        metrics["loss_ce"] = loss_ce
         metrics["loss_d_real"] = loss_d_real
         metrics["loss_d_replay"] = loss_d_replay
         metrics["loss_d_fake"] = loss_d_fake

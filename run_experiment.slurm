@@ -24,7 +24,7 @@ conda activate ML  # or your environment name
 
 
 # Navigate to project
-cd ~/Projects/FCIL/models
+cd ~/Projects/FedCIL/models
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1  # Show full Hydra errors
@@ -75,9 +75,9 @@ export HYDRA_FULL_ERROR=1  # Show full Hydra errors
 #     python run.py --config-path=../config/cifar10 --config-name=$config
 # done
 
-python run.py --config-path=/home/hli54/Projects/FCIL/config/mnist --config-name=mnist
+python run.py --config-path=/home/hli54/Projects/FedCIL/config/mnist --config-name=mnist
 
-# python run.py --config-path=/home/hli54/Projects/FCIL/config/cifar10 --config-name=nc5cpr3 -m
+# python run.py --config-path=/home/hli54/Projects/FedCIL/config/cifar10 --config-name=nc5cpr3 -m
 
 
 echo "Job completed at $(date)"
