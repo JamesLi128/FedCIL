@@ -454,10 +454,10 @@ class FedAvgWithACGAN(BaseFCILAlgorithm):
 
             # prev_task_model
             with torch.no_grad():
-                prev_global_model = deepcopy(self.server.model)
-                for param in prev_global_model.parameters():
+                prev_task_model = deepcopy(self.server.model)
+                for param in prev_task_model.parameters():
                     param.requires_grad = False
-                prev_global_model.eval()
+                prev_task_model.eval()
             
             prev_classes = list(self.server.known_classes)
     
